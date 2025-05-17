@@ -9,7 +9,8 @@ backend/
 │   │   └── auth.py              # Supabase JWT auth dependency
 │   │
 │   ├── routers/                 # Route entry points
-│   │   ├── agent.py             # LLM orchestration + tool dispatch
+│   │   ├── conversation.py      # conversation related routes
+|   |   ├── messages.py          # for messages routes
 │   │   ├── upload.py            # Document/image upload endpoints
 │   │   └── user.py              # User info, metadata if needed
 │   │
