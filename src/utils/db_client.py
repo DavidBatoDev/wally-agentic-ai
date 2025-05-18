@@ -304,9 +304,17 @@ class SupabaseClient:
             "embedding": embedding,
             "meta": meta or {}
         }
+
+        if not self._should_embed(meta.get("sender"), meta.get("type", "text")):
+            return  # skip embedding entirely
         
         response = self.client.table("rag_memory").insert(memory_data).execute()
         return response.data[0]
+    
+    # Simplified version of the should_embed function, in the future call llm for gatekeeping
+    def _should_embed(self, sender: str, kind: str) -> bool:
+        # Simulation of a decision-making process for embedding
+        return sender == "user" and kind == "text"
     
     def search_memory(
         self,

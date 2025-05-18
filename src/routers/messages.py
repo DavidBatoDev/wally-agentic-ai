@@ -65,65 +65,63 @@ async def send_text_message(
             context=context,
         )
         
-        # Handle the response based on response_type
-        response_type = agent_response.get("response_type", "text")
-        response_body = agent_response.get("response", "I'm sorry, I couldn't process your request.")
-        
-        # Special handling for different response types
-        if response_type == "buttons":
-            buttons_data = ButtonsMessage(
-                prompt=agent_response.get("prompt", "Choose an option:"),
-                buttons=agent_response.get("buttons", [])
-            )
-            response_kind = "buttons"
-            response_body = buttons_data.model_dump_json()
-        
-        elif response_type == "inputs":
-            inputs_data = InputsMessage(
-                prompt=agent_response.get("prompt", "Please provide the following information:"),
-                inputs=agent_response.get("inputs", [])
-            )
-            response_kind = "inputs"
-            response_body = inputs_data.model_dump_json()
-        
-        elif response_type == "file_card":
-            response_kind = "file_card"
-            response_body = json.dumps(agent_response.get("file_data", {}))
-        
-        elif response_type == "tool_result":
-            # For tool results, we just use text kind but include the tool result in the response
-            response_kind = "text"
-            # The orchestrator already generates a user-friendly response
-        
-        else:
-            # Default to text for any other response type
-            response_kind = "text"
-        
-        # If the response is not already stored by the orchestrator, store it
-        # Note: The current orchestrator already stores responses for text and tool_result types
-        # This is a fallback for other types or if the orchestrator behavior changes
+        # Get the message ID from the agent response if available
+        assistant_message_id = agent_response.get("message_id")
         assistant_message = None
-        try:
-            # Try to fetch the most recent assistant message
+        
+        # If the orchestrator created a message and returned its ID, retrieve it
+        if assistant_message_id:
+            # The orchestrator has already created the message, just retrieve it
             recent_messages = supabase_client.get_conversation_messages(
                 conversation_id=str(message.conversation_id),
-                limit=1,
+                limit=10,  # Get more messages to ensure we find the right one
                 offset=0,
             )
             
-            if recent_messages and recent_messages[0]["sender"] == "assistant":
-                assistant_message = recent_messages[0]
+            # Find the message with the matching ID
+            for msg in recent_messages:
+                if msg.get("id") == assistant_message_id:
+                    assistant_message = msg
+                    break
+        
+        # If no assistant message was found (orchestrator didn't create one or we couldn't find it),
+        # create one based on the response
+        if not assistant_message:
+            # Handle the response based on response_type
+            response_type = agent_response.get("response_type", "text")
+            response_body = agent_response.get("response", "I'm sorry, I couldn't process your request.")
             
-            # If no assistant message was found, create one
-            if not assistant_message:
-                assistant_message = supabase_client.create_message(
-                    conversation_id=str(message.conversation_id),
-                    sender="assistant",
-                    kind=response_kind,
-                    body=response_body,
+            # Special handling for different response types
+            if response_type == "buttons":
+                buttons_data = ButtonsMessage(
+                    prompt=agent_response.get("prompt", "Choose an option:"),
+                    buttons=agent_response.get("buttons", [])
                 )
-        except Exception as e:
-            # If an error occurs, just create a new message
+                response_kind = "buttons"
+                response_body = buttons_data.model_dump_json()
+            
+            elif response_type == "inputs":
+                inputs_data = InputsMessage(
+                    prompt=agent_response.get("prompt", "Please provide the following information:"),
+                    inputs=agent_response.get("inputs", [])
+                )
+                response_kind = "inputs"
+                response_body = inputs_data.model_dump_json()
+            
+            elif response_type == "file_card":
+                response_kind = "file_card"
+                response_body = json.dumps(agent_response.get("file_data", {}))
+            
+            elif response_type == "tool_result":
+                # For tool results, we just use text kind but include the tool result in the response
+                response_kind = "text"
+                # The orchestrator already generates a user-friendly response
+            
+            else:
+                # Default to text for any other response type
+                response_kind = "text"
+            
+            # Create the assistant message
             assistant_message = supabase_client.create_message(
                 conversation_id=str(message.conversation_id),
                 sender="assistant",
@@ -135,8 +133,8 @@ async def send_text_message(
             "success": True,
             "user_message": user_message,
             "assistant_message": assistant_message,
-            "response_type": response_type,
-            "tool_result": agent_response.get("tool_result") if response_type == "tool_result" else None,
+            "response_type": agent_response.get("response_type", "text"),
+            "tool_result": agent_response.get("tool_result") if agent_response.get("response_type") == "tool_result" else None,
         }
     except HTTPException as he:
         raise he
@@ -207,65 +205,63 @@ async def send_action_message(
                 context={**context, "is_action": True, "action": action.action, "values": action.values or {}}
             )
         
-        # Handle the response based on response_type
-        response_type = agent_response.get("response_type", "text")
-        response_body = agent_response.get("response", "I'm processing your action.")
-        
-        # Special handling for different response types
-        if response_type == "buttons":
-            buttons_data = ButtonsMessage(
-                prompt=agent_response.get("prompt", "Choose an option:"),
-                buttons=agent_response.get("buttons", [])
-            )
-            response_kind = "buttons"
-            response_body = buttons_data.model_dump_json()
-        
-        elif response_type == "inputs":
-            inputs_data = InputsMessage(
-                prompt=agent_response.get("prompt", "Please provide the following information:"),
-                inputs=agent_response.get("inputs", [])
-            )
-            response_kind = "inputs"
-            response_body = inputs_data.model_dump_json()
-        
-        elif response_type == "file_card":
-            response_kind = "file_card"
-            response_body = json.dumps(agent_response.get("file_data", {}))
-        
-        elif response_type == "tool_result":
-            # For tool results, we just use text kind but include the tool result in the response
-            response_kind = "text"
-            # The orchestrator already generates a user-friendly response
-        
-        else:
-            # Default to text for any other response type
-            response_kind = "text"
-        
-        # If the response is not already stored by the orchestrator, store it
-        # Note: The current orchestrator already stores responses for text and tool_result types
-        # This is a fallback for other types or if the orchestrator behavior changes
+        # Get the message ID from the agent response if available
+        assistant_message_id = agent_response.get("message_id")
         assistant_message = None
-        try:
-            # Try to fetch the most recent assistant message
+        
+        # If the orchestrator created a message and returned its ID, retrieve it
+        if assistant_message_id:
+            # The orchestrator has already created the message, just retrieve it
             recent_messages = supabase_client.get_conversation_messages(
                 conversation_id=str(action.conversation_id),
-                limit=1,
+                limit=10,  # Get more messages to ensure we find the right one
                 offset=0,
             )
             
-            if recent_messages and recent_messages[0]["sender"] == "assistant":
-                assistant_message = recent_messages[0]
+            # Find the message with the matching ID
+            for msg in recent_messages:
+                if msg.get("id") == assistant_message_id:
+                    assistant_message = msg
+                    break
+        
+        # If no assistant message was found (orchestrator didn't create one or we couldn't find it),
+        # create one based on the response
+        if not assistant_message:
+            # Handle the response based on response_type
+            response_type = agent_response.get("response_type", "text")
+            response_body = agent_response.get("response", "I'm processing your action.")
             
-            # If no assistant message was found, create one
-            if not assistant_message:
-                assistant_message = supabase_client.create_message(
-                    conversation_id=str(action.conversation_id),
-                    sender="assistant",
-                    kind=response_kind,
-                    body=response_body,
+            # Special handling for different response types
+            if response_type == "buttons":
+                buttons_data = ButtonsMessage(
+                    prompt=agent_response.get("prompt", "Choose an option:"),
+                    buttons=agent_response.get("buttons", [])
                 )
-        except Exception as e:
-            # If an error occurs, just create a new message
+                response_kind = "buttons"
+                response_body = buttons_data.model_dump_json()
+            
+            elif response_type == "inputs":
+                inputs_data = InputsMessage(
+                    prompt=agent_response.get("prompt", "Please provide the following information:"),
+                    inputs=agent_response.get("inputs", [])
+                )
+                response_kind = "inputs"
+                response_body = inputs_data.model_dump_json()
+            
+            elif response_type == "file_card":
+                response_kind = "file_card"
+                response_body = json.dumps(agent_response.get("file_data", {}))
+            
+            elif response_type == "tool_result":
+                # For tool results, we just use text kind but include the tool result in the response
+                response_kind = "text"
+                # The orchestrator already generates a user-friendly response
+            
+            else:
+                # Default to text for any other response type
+                response_kind = "text"
+            
+            # Create the assistant message
             assistant_message = supabase_client.create_message(
                 conversation_id=str(action.conversation_id),
                 sender="assistant",
@@ -277,8 +273,8 @@ async def send_action_message(
             "success": True,
             "user_message": user_message,
             "assistant_message": assistant_message,
-            "response_type": response_type,
-            "tool_result": agent_response.get("tool_result") if response_type == "tool_result" else None,
+            "response_type": agent_response.get("response_type", "text"),
+            "tool_result": agent_response.get("tool_result") if agent_response.get("response_type") == "tool_result" else None,
         }
     except HTTPException as he:
         raise he

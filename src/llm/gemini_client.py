@@ -1,4 +1,3 @@
-# backend/src/llm/gemini_client.py
 """
 Gemini LLM client for interacting with Google's Gemini API.
 """
@@ -44,7 +43,7 @@ DEFAULT_SAFETY_SETTINGS = [
 
 class GeminiClient:
     """Client for interacting with Google's Gemini API."""
-    def __init__(self, model_name: str = "gemini-pro"):
+    def __init__(self, model_name: str = "gemini-2.0-flash"):
         """
         Initialize the Gemini client.
         
