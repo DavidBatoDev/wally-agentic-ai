@@ -274,7 +274,41 @@ class AgentOrchestrator:
             meta={"sender": "system", "type": "tool_execution"}
         )
         
-        # Generate a user-friendly response based on the tool result
+        # Special handling for recommend_next_actions tool
+        if tool_name == "recommend_next_actions":
+            # For next actions tool, we don't need to generate a user-friendly response
+            # since the UI will display the buttons directly
+            if tool_result.get("status") == "success":
+                return {
+                    "conversation_id": conversation_id,
+                    "response_type": "buttons",
+                    "prompt": tool_result.get("prompt"),
+                    "buttons": tool_result.get("buttons"),
+                    "message_id": tool_result.get("message_id"),
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_result": tool_result
+                }
+            else:
+                # If next actions failed, fall back to regular message
+                error_message = f"I couldn't prepare the next steps. {tool_result.get('error', '')}"
+                assistant_message = supabase_client.create_message(
+                    conversation_id=str(conversation_id),
+                    sender="assistant",
+                    kind="text",
+                    body=error_message
+                )
+                return {
+                    "conversation_id": conversation_id,
+                    "response_type": "text",
+                    "response": error_message,
+                    "message_id": assistant_message.get("id"),
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_result": tool_result
+                }
+        
+        # For other tools, generate a user-friendly response based on the tool result
         agent_summary = await self.llm_client.generate_text(
             prompt=f"""
             The user said: "{user_message}"
@@ -336,10 +370,82 @@ class AgentOrchestrator:
         """
         values = values or {}
         context = context or {}
-    
+
         try:
+            # If this is a tool action from a button click
+            if values.get("action_type") == "tool":
+                tool_name = values.get("tool_name")
+                tool_parameters = values.get("tool_parameters", {})
+                
+                if tool_name:
+                    # Log the tool action
+                    logger.info(f"Processing tool action: {tool_name} with parameters: {json.dumps(tool_parameters)}")
+                    
+                    # Execute the tool directly
+                    tool_result = await self.tool_registry.execute_tool(
+                        tool_name=tool_name,
+                        tool_input=tool_parameters,
+                        conversation_id=conversation_id,
+                        context=context
+                    )
+                    
+                    # Store user's button selection in memory
+                    await self._store_memory(
+                        conversation_id=conversation_id,
+                        content=f"User selected button action: {action} which triggered tool: {tool_name}",
+                        meta={
+                            "sender": "user", 
+                            "type": "action", 
+                            "action": action, 
+                            "tool": tool_name
+                        }
+                    )
+                    
+                    # Generate response based on tool result
+                    system_prompt = self._create_system_prompt()
+                    user_action_description = f"User selected: {action}"
+                    
+                    agent_summary = await self.llm_client.generate_text(
+                        prompt=f"""
+                        The user clicked a button labeled "{action}" which triggered the tool "{tool_name}" with parameters:
+                        {json.dumps(tool_parameters, indent=2)}
+                        
+                        The tool returned the following result:
+                        {json.dumps(tool_result, indent=2)}
+                        
+                        Generate a user-friendly response addressing what the user selected and what happened as a result.
+                        """,
+                        system_prompt=system_prompt
+                    )
+                    
+                    # Store assistant response in memory
+                    await self._store_memory(
+                        conversation_id=conversation_id,
+                        content=agent_summary,
+                        meta={"sender": "assistant", "type": "message"}
+                    )
+                    
+                    # Store the assistant's message in the database
+                    assistant_message = supabase_client.create_message(
+                        conversation_id=str(conversation_id),
+                        sender="assistant",
+                        kind="text",
+                        body=agent_summary
+                    )
+                    
+                    return {
+                        "conversation_id": conversation_id,
+                        "response_type": "tool_result",
+                        "response": agent_summary,
+                        "message_id": assistant_message.get("id"),
+                        "tool_name": tool_name,
+                        "tool_input": tool_parameters,
+                        "tool_result": tool_result
+                    }
+            
+            # For regular message action (not a tool action)
             # Format action as a structured message
-            action_message = f"User action: {action}" + (f" with values {json.dumps(values)}" if values else "")
+            action_message = f"User selected: {action}" + (f" with values {json.dumps(values)}" if values else "")
             
             # Store action in memory
             await self._store_memory(
@@ -363,7 +469,6 @@ class AgentOrchestrator:
                 "response_type": "error",
                 "response": "I encountered an error processing your action. Please try again."
             }
-
 
 # Singleton instance
 agent_orchestrator = AgentOrchestrator()

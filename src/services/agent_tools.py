@@ -10,6 +10,9 @@ from uuid import UUID
 import re
 import traceback
 
+# Import our new next_action_tool
+from src.services.next_action_tool import register_next_actions_tool
+
 logger = logging.getLogger(__name__)
 
 class ToolRegistry:
@@ -116,6 +119,8 @@ class ToolRegistry:
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
         self._register_calculator_tool()
+        # Register the next actions tool
+        register_next_actions_tool(self)
         # Add more default tools here as needed
     
     def _register_calculator_tool(self) -> None:
