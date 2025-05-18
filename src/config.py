@@ -1,3 +1,4 @@
+# backend/src/config.py
 """
 Configuration module for the agentic AI system with improved JWT handling.
 """
@@ -24,11 +25,11 @@ class Settings:
     DEBUG: bool = os.getenv("DEBUG", "False").lower() in ("true", "1", "t")
     
     # Supabase settings
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://ylvmwrvyiamecvnydwvj.supabase.co")
-    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlsdm13cnZ5aWFtZWN2bnlkd3ZqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0NzA5MjkzMSwiZXhwIjoyMDYyNjY4OTMxfQ.6PehkE7I_Q9j8EzzSUC6RGi7Z9QykHcY6Qa20eiLKtM")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "my-supabase-url")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "my-supabase-key")
     
     # Raw JWT secret from environment variable
-    _RAW_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "Qj4sPpZVs1Qd/iV1n3L3Caqm4sYXmhSvEGbgai9r17Wvdg2ZZLfm1V8Dts5Ns0x39hFfCmz7DPy4Q0+NPSlzoQ==")
+    _RAW_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "my-jwt-secret")
     
     # Decoded JWT secret (processed during initialization)
     SUPABASE_JWT_SECRET: str = None
@@ -47,7 +48,7 @@ class Settings:
     ]
 
     # LLM settings
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "AIzaSyAekuaSLFm6dJ47y2OgaykTYBBU2RHjCzc")
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "my-gemini-api-key")
     
     # Storage settings
     STORAGE_BUCKET_NAME: str = "user-uploads"
