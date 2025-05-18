@@ -209,26 +209,30 @@ class AgentOrchestrator:
             }
     
     async def _store_memory(self, conversation_id: UUID, content: str, meta: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Store content in the conversation memory with improved metadata handling.
-        
-        Args:
-            conversation_id: The conversation ID
-            content: The text content to store
-            meta: Optional metadata
-        """
+        """Store content in the conversation memory with improved metadata handling."""
         try:
             # Generate embedding
-            embedding = await self.llm_client.get_embeddings(content)
-            
-            # Store in RAG memory
-            supabase_client.store_memory(
-                conversation_id=str(conversation_id),
-                content=content,
-                embedding=embedding,
-                meta=meta
-            )
-            logger.debug(f"Stored memory for conversation {conversation_id}: {content[:50]}...")
+            try:
+                embedding = await self.llm_client.get_embeddings(content)
+                
+                # Store in RAG memory
+                supabase_client.store_memory(
+                    conversation_id=str(conversation_id),
+                    content=content,
+                    embedding=embedding,
+                    meta=meta
+                )
+                logger.debug(f"Stored memory for conversation {conversation_id}: {content[:50]}...")
+            except Exception as embedding_error:
+                logger.error(f"Error generating embedding: {embedding_error}")
+                # Store memory without embedding as fallback
+                supabase_client.store_memory(
+                    conversation_id=str(conversation_id),
+                    content=content,
+                    embedding=[],  # Empty embedding
+                    meta={**meta, "embedding_error": str(embedding_error)} if meta else {"embedding_error": str(embedding_error)}
+                )
+                logger.debug(f"Stored memory without embedding for conversation {conversation_id}")
         except Exception as e:
             logger.error(f"Error storing memory: {e}")
             traceback.print_exc()
