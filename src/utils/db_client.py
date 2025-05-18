@@ -1,4 +1,4 @@
-# backend/src/utils/supabase.py
+# backend/src/utils/db_client.py
 """
 Supabase client utilities.
 """
