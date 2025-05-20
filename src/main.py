@@ -6,7 +6,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from pathlib import Path
 
-
 # Set up proper logging
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +22,7 @@ sys.path.append(str(backend_dir))
 # Use absolute imports instead of relative imports
 from src.config import get_settings
 from src.routers import conversations, messages, upload, user
+from src.dependencies.agent import get_agent_orchestrator
 
 # Load settings
 settings = get_settings()
@@ -44,7 +44,6 @@ app.add_middleware(
 )
 
 # Include routers
-# app.include_router(agent.router, prefix="/api/agent", tags=["Agent"])
 app.include_router(conversations.router, prefix="/api/conversations", tags=["Conversations"])
 app.include_router(messages.router, prefix="/api/messages", tags=["Messages"])
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
@@ -62,6 +61,9 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
+    # Initialize the agent_orchestrator to ensure it's ready when needed
+    # This is optional but ensures the LLM is initialized at startup
+    get_agent_orchestrator()
     return {"status": "healthy"}
 
 if __name__ == "__main__":
