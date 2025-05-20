@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 
 from ..dependencies.auth import get_current_user
 from ..models.user import User, UserProfileCreate, UserResponse, UserProfile
-from ..utils.db_client import supabase_client
+from ..db.db_client import supabase_client
 
 router = APIRouter(
     prefix="/users",
