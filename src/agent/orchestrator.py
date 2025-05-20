@@ -1,14 +1,13 @@
 # backend/src/agent/orchestrator.py
 from typing import Dict, Any, List, Optional
 import json
-import uuid
+# import uuid
 from langchain.agents import AgentExecutor, create_structured_chat_agent, AgentType
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, HumanMessagePromptTemplate
-from langchain.memory import ConversationBufferMemory
+# from langchain.memory import ConversationBufferMemory # for now we are not using memory
 from langchain.schema.messages import SystemMessage, HumanMessage, AIMessage
 from langchain.tools import BaseTool
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
-from pydantic import BaseModel
 from src.agent.agent_tools import get_tools
 
 class AgentOrchestrator:
@@ -39,10 +38,13 @@ class AgentOrchestrator:
         self.chain = self._create_agent_chain()
         
     def _create_agent_chain(self):
-        """Create a structured chat agent chain using LCEL."""
+        """Create a structured chat agent chain using LCEL and STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION."""
         # Create system prompt that instructs the agent to return structured outputs
         system_prompt = """You are an intelligent assistant that helps users with various tasks.
         You have access to several tools that can help you fulfill user requests.
+        
+        When you need to use a tool, make sure to carefully analyze what tool is most appropriate and
+        provide all necessary parameters. Always think through your reasoning step by step.
         
         Important: Always return your final response in one of these JSON formats:
         
@@ -83,20 +85,22 @@ class AgentOrchestrator:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        # Create the structured chat agent
+        # Create the structured chat agent with ZERO_SHOT_REACT_DESCRIPTION
         agent = create_structured_chat_agent(
             llm=self.llm,
             tools=self.tools,
-            prompt=prompt
+            prompt=prompt,
+            agent_type=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION
         )
         
-        # Create the agent executor
+        # Create the agent executor with callbacks for tracking
         agent_executor = AgentExecutor(
             agent=agent,
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=5
+            max_iterations=5,
+            return_intermediate_steps=True  # Return the intermediate steps for better debugging
         )
         
         # Create input preparation function
@@ -118,11 +122,13 @@ class AgentOrchestrator:
                 parsed_output = self._parse_agent_output(output["output"])
                 return {
                     "response": parsed_output,
-                    "raw_output": output
+                    "raw_output": output,
+                    "intermediate_steps": output.get("intermediate_steps", [])
                 }
             return {
                 "response": self._parse_agent_output(str(output)),
-                "raw_output": output
+                "raw_output": output,
+                "intermediate_steps": output.get("intermediate_steps", [])
             }
         
         # Create the LCEL chain
@@ -187,6 +193,9 @@ class AgentOrchestrator:
             "context": context
         })
         
+        # Store intermediate steps for debugging if needed
+        intermediate_steps = result.get("formatted_output", {}).get("intermediate_steps", [])
+        
         # Extract the formatted output
         output = result["formatted_output"]["response"]
         
@@ -197,6 +206,15 @@ class AgentOrchestrator:
             kind=output.get("kind", "text"),
             body=json.dumps(output)
         )
+        
+        # If there are intermediate steps, store them for debugging
+        if intermediate_steps:
+            self.db_client.create_debug_log(
+                conversation_id=str(conversation_id),
+                message_id=assistant_message["id"],
+                log_type="agent_steps",
+                content=json.dumps({"steps": intermediate_steps})
+            )
         
         return {
             "message": assistant_message,
