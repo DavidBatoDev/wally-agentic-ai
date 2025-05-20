@@ -39,6 +39,13 @@ class Settings:
     
     # Authentication settings
     VERIFY_USER_EXISTS: bool = os.getenv("VERIFY_USER_EXISTS", "False").lower() in ("true", "1", "t")
+
+    DEBUG: bool = True
+    
+    # Agent settings
+    MAX_AGENT_ITERATIONS: int = 5
+    DEFAULT_AGENT_TEMPERATURE: float = 0.2
+
     
     # CORS settings
     CORS_ORIGINS: list = [

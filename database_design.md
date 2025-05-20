@@ -18,7 +18,7 @@ This document outlines the complete database schema for the Wally-Chat applicati
 
 **messages**: Stores individual messages within conversations
 - Fields: id, conversation_id, sender, kind, body, created_at
-- sender can be: 'user', 'assistant', 'system', 'model', or 'tools'
+- sender can be: 'user', 'assistant', 'system', or 'tools'
 - kind can be: 'text', 'file', 'action', 'file_card', 'buttons', or 'inputs'
 - The body field contains plain text or JSON payloads depending on message kind
 
