@@ -32,8 +32,7 @@ def setup_agent_orchestrator(
         config = {}
     
     # Get tools from agent_tools module    
-    tools = get_tools(db_client=supabase_client)
-    
+    tools = get_tools(db_client=supabase_client)    
     # Create the agent orchestrator with specified agent type
     orchestrator = AgentOrchestrator(
         llm=llm, 

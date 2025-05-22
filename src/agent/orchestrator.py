@@ -1,14 +1,19 @@
 # backend/src/agent/orchestrator.py
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 import json
-# import uuid
-from langchain.agents import AgentExecutor, create_structured_chat_agent, AgentType
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, HumanMessagePromptTemplate
+from langchain.agents import (
+    create_structured_chat_agent,
+    AgentExecutor,
+)
 # from langchain.memory import ConversationBufferMemory # for now we are not using memory
-from langchain.schema.messages import SystemMessage, HumanMessage, AIMessage
+from langchain.schema.messages import HumanMessage, AIMessage
 from langchain.tools import BaseTool
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from src.agent.agent_tools import get_tools
+from langchain.tools import BaseTool
+from langchain.agents.structured_chat.base import StructuredChatAgent
+from langchain.schema import BaseMessage
 
 class AgentOrchestrator:
     """
@@ -33,116 +38,49 @@ class AgentOrchestrator:
             self.tools = get_tools(db_client=db_client)
         else:
             self.tools = tools
+
+        # Create tool names and descriptions for the prompt
+        tool_names = ", ".join([tool.name for tool in self.tools])
+        tools_str = "\n".join([f"{tool.name}: {tool.description}" for tool in self.tools])
         
-        # Create the agent chain using LCEL
-        self.chain = self._create_agent_chain()
+        # # Use the default structured chat prompt with manual variable substitution
+        # base_prompt = StructuredChatAgent.create_prompt(
+        #     tools=self.tools,
+        #     prefix="Assistant is a large language model trained to be helpful, harmless, and honest.",
+        #     suffix="Begin! Reminder to ALWAYS respond with a valid json blob of a single action. Use tools if necessary. Respond directly if appropriate. Format is Action:```$JSON_BLOB```then Observation",
+        #     human_message_template="{input}\n\n{agent_scratchpad}",
+        #     format_instructions=(
+        #         "Use a json blob to specify a tool with keys 'action' and 'action_input'.\n\n"
+        #         'Valid "action" values: "Final Answer" or {tool_names}\n\n'
+        #         "Provide ONLY ONE action per JSON blob."
+        #     )
+        # )
         
-    def _create_agent_chain(self):
-        """Create a structured chat agent chain using LCEL and STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION."""
-        # Create system prompt that instructs the agent to return structured outputs
-        system_prompt = """You are an intelligent assistant that helps users with various tasks.
-        You have access to several tools that can help you fulfill user requests.
-        
-        When you need to use a tool, make sure to carefully analyze what tool is most appropriate and
-        provide all necessary parameters. Always think through your reasoning step by step.
-        
-        Important: Always return your final response in one of these JSON formats:
-        
-        1. For simple text responses:
-        ```json
-        {"kind": "text", "text": "Your message here"}
-        ```
-        
-        2. For showing buttons:
-        ```json
-        {"kind": "buttons", "prompt": "What would you like to do next?", "buttons": [{"label": "Option 1", "action": "action_1"}, {"label": "Option 2", "action": "action_2"}]}
-        ```
-        
-        3. For requesting structured input:
-        ```json
-        {"kind": "inputs", "prompt": "Please provide the following information:", "inputs": [{"name": "field_1", "label": "Field 1", "type": "text"}, {"name": "field_2", "label": "Field 2", "type": "select", "options": ["option1", "option2"]}], "submit_label": "Submit"}
-        ```
-        
-        4. For file uploads:
-        ```json
-        {"kind": "buttons", "prompt": "Please upload a file", "buttons": [{"label": "Upload PDF", "action": "upload_file", "file_types": ["application/pdf"]}]}
-        ```
-        
-        5. For file previews:
-        ```json
-        {"kind": "file_card", "file_id": "file_id_here", "title": "Document Title", "summary": "Brief summary of the document", "status": "ready", "actions": [{"label": "Extract Data", "action": "extract_data"}]}
-        ```
-        
-        Always think carefully about which response format is most appropriate for the current interaction.
-        Use the most suitable format based on the user's needs.
-        """
-        
-        # Create the chat prompt template
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content=system_prompt),
-            MessagesPlaceholder(variable_name="chat_history"),
-            HumanMessagePromptTemplate.from_template("{input}"),
-            MessagesPlaceholder(variable_name="agent_scratchpad"),
-        ])
-        
-        # Create the structured chat agent with ZERO_SHOT_REACT_DESCRIPTION
-        agent = create_structured_chat_agent(
+        # The prompt template needs these variables filled manually
+        # prompt = base_prompt.partial(
+        #     tools=tools_str,
+        #     tool_names=tool_names
+        # )
+
+        # Create the agent with the custom prompt
+        agent = StructuredChatAgent.from_llm_and_tools(
             llm=self.llm,
             tools=self.tools,
-            prompt=prompt,
-            agent_type=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION
+            # prompt=prompt
         )
-        
-        # Create the agent executor with callbacks for tracking
-        agent_executor = AgentExecutor(
+
+        # Create the executor
+        self.agent_executor = AgentExecutor.from_agent_and_tools(
             agent=agent,
             tools=self.tools,
             verbose=True,
             handle_parsing_errors=True,
-            max_iterations=5,
-            return_intermediate_steps=True  # Return the intermediate steps for better debugging
+            max_iterations=6,  # Reduced to prevent loops
+            max_execution_time=30,  # 30 second timeout
+            return_intermediate_steps=True,
         )
-        
-        # Create input preparation function
-        def prepare_input(inputs):
-            user_message = inputs["user_message"]
-            chat_history = inputs.get("chat_history", [])
-            context = inputs.get("context", {})
-            
-            # Combine into the format expected by the agent executor
-            return {
-                "input": user_message,
-                "chat_history": chat_history,
-                "context": context
-            }
-        
-        # Create output formatting function
-        def format_output(output):
-            if "output" in output:
-                parsed_output = self._parse_agent_output(output["output"])
-                return {
-                    "response": parsed_output,
-                    "raw_output": output,
-                    "intermediate_steps": output.get("intermediate_steps", [])
-                }
-            return {
-                "response": self._parse_agent_output(str(output)),
-                "raw_output": output,
-                "intermediate_steps": output.get("intermediate_steps", [])
-            }
-        
-        # Create the LCEL chain
-        chain = (
-            RunnablePassthrough()
-            .assign(prepared_input=RunnableLambda(prepare_input))
-            .assign(agent_result=lambda x: agent_executor.invoke(x["prepared_input"]))
-            .assign(formatted_output=lambda x: format_output(x["agent_result"]))
-            .pick(["formatted_output"])
-        )
-        
-        return chain
-    
-    async def _get_conversation_history(self, conversation_id: str) -> List[Dict[str, Any]]:
+
+    async def _get_conversation_history(self, conversation_id: str) -> List[BaseMessage]:
         """
         Retrieve the conversation history from the database.
         
@@ -154,20 +92,27 @@ class AgentOrchestrator:
         """
         # Get recent messages (limit to a reasonable number to avoid context length issues)
         messages = self.db_client.get_conversation_messages(conversation_id, limit=10)
+
+        def _decode_body(body: Union[str, dict]) -> str:
+            if isinstance(body, str):
+                try:
+                    parsed = json.loads(body)
+                    return parsed.get("text", body)
+                except json.JSONDecodeError:
+                    return body
+            elif isinstance(body, dict):
+                return body.get("text", "")
+            else:
+                return str(body)
         
         # Convert to LangChain message format
         history = []
         for msg in messages:
+            content = _decode_body(msg["body"])
             if msg["sender"] == "user":
-                if msg["kind"] == "text":
-                    body = json.loads(msg["body"]) if isinstance(msg["body"], str) and msg["body"].startswith("{") else msg["body"]
-                    content = body["text"] if isinstance(body, dict) and "text" in body else msg["body"]
-                    history.append(HumanMessage(content=content))
+                history.append(HumanMessage(content=content))
             elif msg["sender"] == "assistant":
-                if msg["kind"] == "text":
-                    body = json.loads(msg["body"]) if isinstance(msg["body"], str) and msg["body"].startswith("{") else msg["body"]
-                    content = body["text"] if isinstance(body, dict) and "text" in body else msg["body"]
-                    history.append(AIMessage(content=content))
+                history.append(AIMessage(content=content))
                     
         return history
     
@@ -187,159 +132,27 @@ class AgentOrchestrator:
         history = await self._get_conversation_history(conversation_id)
         
         # Run the agent chain
-        result = await self.chain.ainvoke({
-            "user_message": user_message,
+        result = await self.agent_executor.ainvoke({
+            "input": user_message,
             "chat_history": history,
-            "context": context
         })
         
-        # Store intermediate steps for debugging if needed
-        intermediate_steps = result.get("formatted_output", {}).get("intermediate_steps", [])
+        final_answer      = result["output"]
+        intermediate_steps = result.get("intermediate_steps", [])
         
-        # Extract the formatted output
-        output = result["formatted_output"]["response"]
-        
-        # Store the assistant's response in the database
+        # persist the final answer
         assistant_message = self.db_client.create_message(
             conversation_id=str(conversation_id),
             sender="assistant",
-            kind=output.get("kind", "text"),
-            body=json.dumps(output)
+            kind="text",
+            body=json.dumps({"text": final_answer}),
         )
         
         # If there are intermediate steps, store them for debugging
         if intermediate_steps:
-            self.db_client.create_debug_log(
-                conversation_id=str(conversation_id),
-                message_id=assistant_message["id"],
-                log_type="agent_steps",
-                content=json.dumps({"steps": intermediate_steps})
-            )
+            print("Intermediate steps:", intermediate_steps)
         
         return {
             "message": assistant_message,
-            "response": output
+            "response": {"kind": "text", "text": final_answer},
         }
-    
-    def _parse_agent_output(self, output: str) -> Dict[str, Any]:
-        """
-        Parse the agent's output to ensure it's in the correct format.
-        If it's not valid JSON, convert it to a text response.
-        
-        Args:
-            output: The output string from the agent
-            
-        Returns:
-            Structured output dict
-        """
-        # Try to parse as JSON
-        try:
-            # Check if output is already a dictionary
-            if isinstance(output, dict):
-                # Validate it has the required fields
-                if "kind" in output:
-                    return output
-                else:
-                    # Convert to text response
-                    return {"kind": "text", "text": str(output)}
-            
-            # Extract JSON if it's inside a code block
-            if "```json" in output:
-                json_text = output.split("```json")[1].split("```")[0].strip()
-                parsed = json.loads(json_text)
-                
-                # Validate it has the required fields
-                if "kind" in parsed:
-                    return parsed
-            
-            # Try to parse the entire output as JSON
-            parsed = json.loads(output)
-            
-            # Validate it has the required fields
-            if "kind" in parsed:
-                return parsed
-                
-        except (json.JSONDecodeError, IndexError, KeyError):
-            # If parsing fails or required fields are missing, convert to text
-            pass
-        
-        # Default to text response
-        return {"kind": "text", "text": output}
-    
-    async def process_action(self, conversation_id: str, action: str, values: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process an action from the user (e.g., button click or form submission).
-        
-        Args:
-            conversation_id: The ID of the conversation
-            action: The action identifier
-            values: Values associated with the action
-            context: Additional context like user_id
-            
-        Returns:
-            Response from the assistant
-        """
-        # Store the action in the database
-        action_message = self.db_client.create_message(
-            conversation_id=str(conversation_id),
-            sender="user",
-            kind="action",
-            body=json.dumps({
-                "action": action,
-                "values": values
-            })
-        )
-        
-        # Format the action as input for the agent
-        action_input = f"User performed action: {action}"
-        if values:
-            action_input += f" with values: {json.dumps(values)}"
-        
-        # Process the action with the agent
-        response = await self.process_user_message(
-            conversation_id=conversation_id,
-            user_message=action_input,
-            context=context
-        )
-        
-        return response
-    
-    async def process_file_upload(self, conversation_id: str, file_id: str, file_info: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process a file upload from the user.
-        
-        Args:
-            conversation_id: The ID of the conversation
-            file_id: The ID of the uploaded file
-            file_info: Information about the file
-            context: Additional context like user_id
-            
-        Returns:
-            Response from the assistant
-        """
-        # Store the file message in the database
-        file_message = self.db_client.create_message(
-            conversation_id=str(conversation_id),
-            sender="user",
-            kind="file",
-            body=json.dumps({
-                "file_id": file_id,
-                "name": file_info.get("name", ""),
-                "mime": file_info.get("mime", ""),
-                "size": file_info.get("size", 0),
-                "bucket": file_info.get("bucket", "user-uploads"),
-                "object_key": file_info.get("object_key", "")
-            })
-        )
-        
-        # Format the file upload as input for the agent
-        file_input = f"User uploaded a file: {file_info.get('name', '')} (type: {file_info.get('mime', '')})"
-        
-        # Process the file upload with the agent
-        response = await self.process_user_message(
-            conversation_id=conversation_id,
-            user_message=file_input,
-            context={**context, "file_id": file_id}
-        )
-        
-        return response
