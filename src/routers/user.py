@@ -10,10 +10,7 @@ from ..dependencies.auth import get_current_user
 from ..models.user import User, UserProfileCreate, UserResponse, UserProfile
 from ..db.db_client import supabase_client
 
-router = APIRouter(
-    prefix="/users",
-    tags=["users"],
-)
+router = APIRouter()
 
 
 @router.get("/me", response_model=UserResponse)

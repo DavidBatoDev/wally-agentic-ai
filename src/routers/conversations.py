@@ -10,12 +10,9 @@ from uuid import UUID, uuid4
 from ..dependencies.auth import get_current_user
 from ..models.user import User
 from ..models.conversation import ConversationCreate, Conversation, Message
-from ..utils.db_client import supabase_client
+from ..db.db_client import supabase_client
 
-router = APIRouter(
-    prefix="/conversations",
-    tags=["conversations"],
-)
+router = APIRouter()
 
 
 @router.post("/", response_model=Dict[str, Any])
