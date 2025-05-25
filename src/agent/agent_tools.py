@@ -51,6 +51,24 @@ class ShowProgressBarInput(BaseModel):
     percent: int = Field(ge=0, le=100, description="Progress percentage (0‑100)")
 
 
+class ShowInputsInput(BaseModel):
+    """Schema for the mock `show_inputs` UI tool."""
+    
+    prompt: str = Field(description="Instructions shown above the input form")
+    inputs: List[Dict[str, Any]] = Field(description="List of input field definitions")
+    submit_label: str = Field(default="Submit", description="Label for the submit button")
+
+
+class ShowFileCardInput(BaseModel):
+    """Schema for the mock `show_file_card` UI tool."""
+    
+    file_id: str = Field(description="Unique identifier for the file")
+    title: str = Field(description="Display title for the file")
+    thumbnail: Optional[str] = Field(default=None, description="URL to thumbnail image")
+    summary: str = Field(description="Brief description of the file content")
+    status: str = Field(default="ready", description="Status: ready | processing | error")
+
+
 # -----------------------------------------------------------------------------
 # Tool factory
 # -----------------------------------------------------------------------------
@@ -111,54 +129,68 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         return {
             "kind": "buttons",
             "prompt": prompt,
-            "buttons": buttons,
+            "buttons": [{"label": btn, "action": f"button_{i}"} for i, btn in enumerate(buttons)],
         }
 
     tools.append(
         StructuredTool.from_function(
             func=show_buttons,
             name="show_buttons",
-            description="Render a prompt with multiple buttons (labels only, no callbacks).",
+            description="Display interactive buttons for user selection. Use when you want the user to choose from predefined options.",
             args_schema=ShowButtonsInput,
             return_direct=True,
         )
     )
 
     # ------------------------------------------------------------------
-    def show_notification(message: str, severity: str = "info") -> Dict[str, str]:
-        """Return a mock notification object."""
+    def show_inputs(prompt: str, inputs: List[Dict[str, Any]], submit_label: str = "Submit") -> Dict[str, Any]:
+        """Return a JSON payload representing an input form."""
 
         return {
-            "kind": "notification",
-            "severity": severity,
-            "message": message,
+            "kind": "inputs",
+            "prompt": prompt,
+            "inputs": inputs,
+            "submit_label": submit_label,
         }
 
     tools.append(
         StructuredTool.from_function(
-            func=show_notification,
-            name="show_notification",
-            description="Display a toast/alert notification to the user (mock).",
-            args_schema=ShowNotificationInput,
+            func=show_inputs,
+            name="show_inputs",
+            description="Display a form with input fields for collecting structured data from the user.",
+            args_schema=ShowInputsInput,
+            return_direct=True,
         )
     )
 
     # ------------------------------------------------------------------
-    def show_progress_bar(title: str, percent: int) -> Dict[str, Any]:
-        """Return a mock progress‑bar representation."""
+    def show_file_card(file_id: str, title: str, summary: str, thumbnail: Optional[str] = None, status: str = "ready") -> Dict[str, Any]:
+        """Return a JSON payload representing a file card."""
 
-        return {
-            "kind": "progress_bar",
+        result = {
+            "kind": "file_card",
+            "file_id": file_id,
             "title": title,
-            "percent": percent,
+            "summary": summary,
+            "status": status,
+            "actions": [
+                {"label": "View Details", "action": "view_file_details"},
+                {"label": "Download", "action": "download_file"},
+            ]
         }
+        
+        if thumbnail:
+            result["thumbnail"] = thumbnail
+            
+        return result
 
     tools.append(
         StructuredTool.from_function(
-            func=show_progress_bar,
-            name="show_progress_bar",
-            description="Show a determinate progress bar (mock).",
-            args_schema=ShowProgressBarInput,
+            func=show_file_card,
+            name="show_file_card",
+            description="Display a rich file preview card with actions. Use when presenting file information to users.",
+            args_schema=ShowFileCardInput,
+            return_direct=True,
         )
     )
 
