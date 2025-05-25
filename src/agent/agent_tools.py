@@ -1,3 +1,4 @@
+# backend/src/agent/agent_tools.py
 """
 Tools available to the agent for performing various actions.
 Added several mock UI‑oriented tools that just return a fixed payload so you can prototype agent responses without
