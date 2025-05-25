@@ -22,7 +22,7 @@ sys.path.append(str(backend_dir))
 # Use absolute imports instead of relative imports
 from src.config import get_settings
 from src.routers import conversations, messages, upload, user
-from src.dependencies.agent import get_agent_orchestrator
+from src.dependencies.agent import get_langgraph_orchestrator
 
 # Load settings
 settings = get_settings()
@@ -63,7 +63,7 @@ async def health_check():
     """Health check endpoint"""
     # Initialize the agent_orchestrator to ensure it's ready when needed
     # This is optional but ensures the LLM is initialized at startup
-    get_agent_orchestrator()
+    get_langgraph_orchestrator()
     return {"status": "healthy"}
 
 if __name__ == "__main__":

@@ -4,9 +4,9 @@ Dependency injection utilities for FastAPI.
 """
 
 from .auth import get_current_user
-from .agent import get_agent_orchestrator
+from .agent import get_langgraph_orchestrator
 
 __all__ = [
     "get_current_user",
-    "get_agent_orchestrator",
+    "get_langgraph_orchestrator",
 ]

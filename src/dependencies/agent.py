@@ -1,39 +1,39 @@
-# backend/src/dependencies/agent.py
+# backend/src/dependencies/
 """
-Dependencies for the agent orchestrator.
+Updated dependencies module for the LangGraph-based application.
 """
 
 from functools import lru_cache
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-from src.agent.orchestrator import AgentOrchestrator
-from src.agent.setup_orchestrator import setup_agent_orchestrator
+from src.agent.langgraph_orchestrator import LangGraphOrchestrator
+from src.agent.setup_orchestrator import setup_langgraph_orchestrator
 from src.db.db_client import supabase_client
 from src.config import get_settings
 
 settings = get_settings()
 
 @lru_cache()
-def get_agent_orchestrator() -> AgentOrchestrator:
+def get_langgraph_orchestrator() -> LangGraphOrchestrator:
     """
-    Get or create the agent orchestrator singleton.
+    Get or create the LangGraph orchestrator singleton.
     Uses lru_cache to ensure only one instance is created.
     
     Returns:
-        The agent orchestrator instance
+        The LangGraph orchestrator instance
     """
     # Initialize the LLM
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash",
+        model="gemini-2.0-flash-exp",
         google_api_key=settings.GEMINI_API_KEY,
         temperature=settings.DEFAULT_AGENT_TEMPERATURE,
         streaming=True
     )
     
-    # Set up the agent orchestrator
-    agent_orchestrator = setup_agent_orchestrator(
-        llm=llm, 
+    # Set up the LangGraph orchestrator
+    orchestrator = setup_langgraph_orchestrator(
+        llm=llm,
         supabase_client=supabase_client
     )
     
-    return agent_orchestrator
+    return orchestrator
