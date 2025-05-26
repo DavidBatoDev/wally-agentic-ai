@@ -1,4 +1,4 @@
-# backend/src/routers/enhanced_messages.py
+# backend/src/routers/messages.py
 """
 Enhanced router for message-related endpoints with LangGraph orchestrator support.
 """
