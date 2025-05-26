@@ -46,20 +46,6 @@ class ShowButtonsInput(BaseModel):
         description="Additional context for the workflow step"
     )
 
-class ShowNotificationInput(BaseModel):
-    """Schema for user notifications."""
-    message: str = Field(description="Notification text to display to the user")
-    severity: str = Field(
-        default="info", 
-        description="Notification level: info | success | warning | error"
-    )
-
-class ShowProgressBarInput(BaseModel):
-    """Schema for progress tracking."""
-    title: str = Field(description="Title of the operation being tracked")
-    percent: int = Field(ge=0, le=100, description="Progress percentage (0‑100)")
-    message: Optional[str] = Field(default=None, description="Optional status message")
-
 class ShowInputsInput(BaseModel):
     """Schema for dynamic form generation."""
     prompt: str = Field(description="Instructions shown above the input form")
@@ -112,15 +98,17 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         """Multiply two numbers and return the result."""
         try:
             result = a * b
+            print(f"Multiplying {a} × {b} = {result}")
             return f"The result of {a} × {b} is {result}"
         except Exception as e:
+            print(f"Error multiplying numbers: {e}")
             raise ToolExecutionError(f"Error multiplying numbers: {e}")
 
     tools.append(
         StructuredTool.from_function(
             func=multiply_numbers,
             name="multiply_numbers",
-            description="Multiply two numbers together. Use for direct multiplication operations.",
+            description="Multiply two numbers together. Use this when someone asks for multiplication like '3 * 3' or 'what is 5 times 7'.",
             args_schema=MultiplicationInput,
         )
     )
@@ -132,16 +120,19 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
             raise ToolExecutionError("Expression contains invalid characters")
         
         try:
+            print(f"Calculating expression: {expression}")
             result = eval(expression)  # nosec — guarded by whitelist above
+            print(f"Result: {result}")
             return f"The result of {expression} is {result}"
         except Exception as e:
+            print(f"Error calculating expression: {e}")
             raise ToolExecutionError(f"Error calculating expression: {e}")
 
     tools.append(
         StructuredTool.from_function(
             func=calculate,
             name="calculate",
-            description="Calculate arithmetic expressions like '3 * 4 + 2'.",
+            description="Calculate arithmetic expressions like '3 * 4 + 2' or '(10 - 5) * 2'. Use this for complex math expressions.",
             args_schema=CalculateInput,
         )
     )
@@ -153,8 +144,10 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         prompt: str, 
         buttons: List[Dict[str, str]], 
         context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    ) -> str:
         """Display interactive buttons with workflow context."""
+        
+        print(f"Showing buttons with prompt: {prompt}")
         
         # Ensure buttons have proper structure
         formatted_buttons = []
@@ -181,7 +174,7 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         if context:
             response["context"] = context
             
-        return response
+        return json.dumps(response)
 
     tools.append(
         StructuredTool.from_function(
@@ -198,8 +191,10 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         inputs: List[Dict[str, Any]], 
         submit_label: str = "Submit",
         validation_rules: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    ) -> str:
         """Display a form with input fields."""
+        
+        print(f"Showing input form with prompt: {prompt}")
         
         # Ensure inputs have proper structure
         formatted_inputs = []
@@ -232,7 +227,7 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         if validation_rules:
             response["validation"] = validation_rules
             
-        return response
+        return json.dumps(response)
 
     tools.append(
         StructuredTool.from_function(
@@ -252,8 +247,10 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         status: str = "ready",
         file_size: Optional[str] = None,
         file_type: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> str:
         """Display a rich file preview card."""
+        
+        print(f"Showing file card for: {title}")
         
         result = {
             "kind": "file_card",
@@ -274,7 +271,7 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         if file_type:
             result["file_type"] = file_type
             
-        return result
+        return json.dumps(result)
 
     tools.append(
         StructuredTool.from_function(
@@ -285,100 +282,5 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
             return_direct=True,
         )
     )
-
-    def show_progress_bar(
-        title: str, 
-        percent: int, 
-        message: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Display a progress bar for long-running operations."""
-        
-        result = {
-            "kind": "progress",
-            "title": title,
-            "percent": max(0, min(100, percent)),  # Clamp between 0-100
-        }
-        
-        if message:
-            result["message"] = message
-            
-        return result
-
-    tools.append(
-        StructuredTool.from_function(
-            func=show_progress_bar,
-            name="show_progress_bar",
-            description="Display progress information for ongoing operations.",
-            args_schema=ShowProgressBarInput,
-            return_direct=True,
-        )
-    )
-
-    def show_notification(message: str, severity: str = "info") -> Dict[str, Any]:
-        """Display a notification to the user."""
-        
-        valid_severities = ["info", "success", "warning", "error"]
-        if severity not in valid_severities:
-            severity = "info"
-            
-        return {
-            "kind": "notification",
-            "message": message,
-            "severity": severity,
-        }
-
-    tools.append(
-        StructuredTool.from_function(
-            func=show_notification,
-            name="show_notification",
-            description="Show a notification message to the user.",
-            args_schema=ShowNotificationInput,
-            return_direct=True,
-        )
-    )
-
-    # ------------------------------------------------------------------
-    # Database-backed tools (if db_client is available)
-    # ------------------------------------------------------------------
-    if db_client:
-        
-        def search_memory(query: str, conversation_id: str, limit: int = 5) -> str:
-            """Search conversation memory for relevant information."""
-            try:
-                # This would require implementing vector search in your db_client
-                # For now, return a placeholder response
-                return f"Memory search for '{query}' in conversation {conversation_id} completed. Found {limit} relevant entries."
-            except Exception as e:
-                raise ToolExecutionError(f"Error searching memory: {e}")
-
-        tools.append(
-            StructuredTool.from_function(
-                func=search_memory,
-                name="search_memory",
-                description="Search conversation memory for relevant past information.",
-                args_schema=SearchMemoryInput,
-            )
-        )
-
-        def store_memory(
-            content: str, 
-            conversation_id: str, 
-            metadata: Optional[Dict[str, Any]] = None
-        ) -> str:
-            """Store important information in conversation memory."""
-            try:
-                # This would require implementing embedding storage
-                return f"Successfully stored information in memory for conversation {conversation_id}"
-            except Exception as e:
-                raise ToolExecutionError(f"Error storing memory: {e}")
-
-        tools.append(
-            StructuredTool.from_function(
-                func=store_memory,
-                name="store_memory",
-                description="Store important information for future reference.",
-                args_schema=StoreMemoryInput,
-            )
-        )
 
     return tools
