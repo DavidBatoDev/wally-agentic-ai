@@ -1,0 +1,1362 @@
+{
+  "template_name": "PSA 1993",
+  "language": "English",
+  "page_size": "A4",
+    "required_fields": {
+    "{province}": "Province of residence",
+    "{city/mnplt}": "City or municipality of residence",
+    "{first_name}": "Given name of the individual",
+    "{middle_name}": "Middle name of the individual",
+    "{last_name}": "Family name of the individual",
+    "{fe}": "Checkbox marker for female (\"X\" if female)",
+    "{ma}": "Checkbox marker for male (\"X\" if male)",
+    "{db_day}": "Day component of the date of birth",
+    "{db_month}": "Month component of the date of birth",
+    "{db_year}": "Year component of the date of birth",
+    "{placebirth_hosp}": "Name of hospital (or place) of birth",
+    "{pb_city/mnplt}": "Place of birth city/municipality",
+    "{pb_prov}": "Place of birth province",
+    "{tb1}": "Time-of-birth hours",
+    "{tb2}": "Time-of-birth minutes",
+    "{tb3}": "Time-of-birth seconds",
+    "{imb1}": "Indicator mark block 1 (custom checkbox)",
+    "{imb2}": "Indicator mark block 2 (custom checkbox)",
+    "{imb3}": "Indicator mark block 3 (custom checkbox)",
+    "{imb_o}": "Indicator mark block O (custom checkbox)",
+    "{bo}": "Barcode option flag",
+    "{wab}": "Weight at birth (kg)",
+    "{m_first_name}": "Mother’s first name",
+    "{m_middle_name}": "Mother’s middle name",
+    "{m_last_name}": "Mother’s last name",
+    "{m_citizenship}": "Mother’s citizenship",
+    "{m_religion}": "Mother’s religion",
+    "{m_occupation}": "Mother’s occupation",
+    "{mtb}": "Mother’s time-to-birth checkbox",
+    "{residence}": "Parent’s residence address",
+    "{m_city/mnplt}": "Mother’s city/municipality",
+    "{m_prov}": "Mother’s province",
+    "{f_first_name}": "Father’s first name",
+    "{f_middle_name}": "Father’s middle name",
+    "{f_last_name}": "Father’s last name",
+    "{f_citizenship}": "Father’s citizenship",
+    "{f_religion}": "Father’s religion",
+    "{f_occupation}": "Father’s occupation",
+    "{ftb}": "Father’s time-to-birth checkbox"
+  },
+  "fillable_text": [
+    {
+      "key": "{province}",
+      "value": "manila",
+      "position": {
+        "x0": 71.06400299072266,
+        "y0": 110.10380554199219,
+        "x1": 106.745361328125,
+        "y1": 119.06840515136719,
+        "width": 35.681358337402344,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 122,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "me} \n{f_middle_name} \n{f_last_name} \n{residence}",
+      "context_after": "{city/mnplt} \n{registration_n} \n{m_city/mnplt}",
+      "bbox_center": {
+        "x": 88.90468215942383,
+        "y": 114.58610534667969
+      }
+    },
+    {
+      "key": "{city/mnplt}",
+      "value": "PUP",
+      "position": {
+        "x0": 96.02400207519531,
+        "y0": 120.30375671386719,
+        "x1": 135.30535888671875,
+        "y1": 129.2683563232422,
+        "width": 39.28135681152344,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 123,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "le_name} \n{f_last_name} \n{residence} \n{province}",
+      "context_after": "{registration_n} \n{m_city/mnplt} \n{m_prov} \n{f_c",
+      "bbox_center": {
+        "x": 115.66468048095703,
+        "y": 124.78605651855469
+      }
+    },
+    {
+      "key": "{first_name}",
+      "value": "David",
+      "position": {
+        "x0": 129.6199951171875,
+        "y0": 144.3037567138672,
+        "x1": 172.38536071777344,
+        "y1": 153.2683563232422,
+        "width": 42.76536560058594,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 107,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "atistics Authority \n \n \n \n \n \n \nBARCODE \nBARCODE",
+      "context_after": "{middle_name} \n{last_name} \n{fe} \n{ma} \n{db_day}",
+      "bbox_center": {
+        "x": 151.00267791748047,
+        "y": 148.7860565185547
+      }
+    },
+    {
+      "key": "{middle_name}",
+      "value": "",
+      "position": {
+        "x0": 205.72999572753906,
+        "y0": 144.90379333496094,
+        "x1": 257.39117540631975,
+        "y1": 153.86839294433594,
+        "width": 51.661179678780684,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 107,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "rity \n \n \n \n \n \n \nBARCODE \nBARCODE \n{first_name}",
+      "context_after": "{last_name} \n{fe} \n{ma} \n{db_day} {db_month} {db",
+      "bbox_center": {
+        "x": 231.5605855669294,
+        "y": 149.38609313964844
+      }
+    },
+    {
+      "key": "{last_name}",
+      "value": "",
+      "position": {
+        "x0": 294.8900146484375,
+        "y0": 144.90379333496094,
+        "x1": 335.6771774291992,
+        "y1": 153.86839294433594,
+        "width": 40.78716278076172,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 107,
+      "line_number": 2,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "BARCODE \nBARCODE \n{first_name} \n{middle_name}",
+      "context_after": "{fe} \n{ma} \n{db_day} {db_month} {db_year} \n{plac",
+      "bbox_center": {
+        "x": 315.28359603881836,
+        "y": 149.38609313964844
+      }
+    },
+    {
+      "key": "{ma}",
+      "value": "",
+      "position": {
+        "x0": 56.63999938964844,
+        "y0": 165.1099853515625,
+        "x1": 67.88160095214843,
+        "y1": 171.7999725341797,
+        "width": 11.241601562499994,
+        "height": 6.6899871826171875
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 6,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 108,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{first_name} \n{middle_name} \n{last_name} \n{fe}",
+      "context_after": "{db_day} {db_month} {db_year} \n{placebirth_host}",
+      "bbox_center": {
+        "x": 62.260800170898435,
+        "y": 168.4549789428711
+      }
+    },
+    {
+      "key": "{fe}",
+      "value": "",
+      "position": {
+        "x0": 91.34400177001953,
+        "y0": 164.989990234375,
+        "x1": 99.87519683837891,
+        "y1": 171.6799774169922,
+        "width": 8.53119506835938,
+        "height": 6.6899871826171875
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 6,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 108,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "ARCODE \n{first_name} \n{middle_name} \n{last_name}",
+      "context_after": "{ma} \n{db_day} {db_month} {db_year} \n{placebirth",
+      "bbox_center": {
+        "x": 95.60959930419922,
+        "y": 168.3349838256836
+      }
+    },
+    {
+      "key": "{db_day}",
+      "value": "",
+      "position": {
+        "x0": 287.2099914550781,
+        "y0": 169.07000732421875,
+        "x1": 310.9219970703125,
+        "y1": 175.75999450683594,
+        "width": 23.712005615234375,
+        "height": 6.6899871826171875
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 6,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 108,
+      "line_number": 2,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "st_name} \n{middle_name} \n{last_name} \n{fe} \n{ma}",
+      "context_after": "{db_month} {db_year} \n{placebirth_host}} \n{pb_cit",
+      "bbox_center": {
+        "x": 299.0659942626953,
+        "y": 172.41500091552734
+      }
+    },
+    {
+      "key": "{db_year}",
+      "value": "",
+      "position": {
+        "x0": 350.3500061035156,
+        "y0": 169.30999755859375,
+        "x1": 376.1139831542969,
+        "y1": 175.99998474121094,
+        "width": 25.76397705078125,
+        "height": 6.6899871826171875
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 6,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "right",
+      "page_number": 1,
+      "block_number": 108,
+      "line_number": 2,
+      "span_number": 4,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "me} \n{last_name} \n{fe} \n{ma} \n{db_day} {db_month}",
+      "context_after": "{placebirth_host}} \n{pb_city/mnplt} \n{pb_prov}",
+      "bbox_center": {
+        "x": 363.23199462890625,
+        "y": 172.65499114990234
+      }
+    },
+    {
+      "key": "{placebirth_hosp}",
+      "value": "",
+      "position": {
+        "x0": 51.959999084472656,
+        "y0": 200.38755798339844,
+        "x1": 114.32621082506682,
+        "y1": 208.76524353027344,
+        "width": 62.36621174059417,
+        "height": 8.377685546875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 8.039999961853027,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 109,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "name} \n{fe} \n{ma} \n{db_day} {db_month} {db_year}",
+      "context_after": "{pb_city/mnplt} \n{pb_prov} \n{imb1} \n{imb2} \n{imb",
+      "bbox_center": {
+        "x": 83.14310495476974,
+        "y": 204.57640075683594
+      }
+    },
+    {
+      "key": "{pb_city/mnplt}",
+      "value": "",
+      "position": {
+        "x0": 240.52999877929688,
+        "y0": 185.7037811279297,
+        "x1": 291.78791427612305,
+        "y1": 194.6683807373047,
+        "width": 51.25791549682617,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 110,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "db_day} {db_month} {db_year} \n{placebirth_host}}",
+      "context_after": "{pb_prov} \n{imb1} \n{imb2} \n{imb3} \n{imb_o} \n{tb1",
+      "bbox_center": {
+        "x": 266.15895652770996,
+        "y": 190.1860809326172
+      }
+    },
+    {
+      "key": "{pb_prov}",
+      "value": "",
+      "position": {
+        "x0": 320.1099853515625,
+        "y0": 185.7037811279297,
+        "x1": 354.3282165527344,
+        "y1": 194.6683807373047,
+        "width": 34.218231201171875,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 110,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "} {db_year} \n{placebirth_host}} \n{pb_city/mnplt}",
+      "context_after": "{imb1} \n{imb2} \n{imb3} \n{imb_o} \n{tb1} \n{tb2} \n{",
+      "bbox_center": {
+        "x": 337.21910095214844,
+        "y": 190.1860809326172
+      }
+    },
+    {
+      "key": "{tb1}",
+      "value": "",
+      "position": {
+        "x0": 57.84000015258789,
+        "y0": 221.8400115966797,
+        "x1": 70.13500150044759,
+        "y1": 228.09201049804688,
+        "width": 12.295001347859696,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 4,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "plt} \n{pb_prov} \n{imb1} \n{imb2} \n{imb3} \n{imb_o}",
+      "context_after": "{tb2} \n{tb3} \n{bo} \n{cob_t} \n{wab} \n{m_first_nam",
+      "bbox_center": {
+        "x": 63.98750082651774,
+        "y": 224.96601104736328
+      }
+    },
+    {
+      "key": "{tb2}",
+      "value": "",
+      "position": {
+        "x0": 121.69999694824219,
+        "y0": 222.1999969482422,
+        "x1": 133.97499338785806,
+        "y1": 228.45199584960938,
+        "width": 12.274996439615876,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 5,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "pb_prov} \n{imb1} \n{imb2} \n{imb3} \n{imb_o} \n{tb1}",
+      "context_after": "{tb3} \n{bo} \n{cob_t} \n{wab} \n{m_first_name} \n{m_",
+      "bbox_center": {
+        "x": 127.83749516805013,
+        "y": 225.32599639892578
+      }
+    },
+    {
+      "key": "{tb3}",
+      "value": "",
+      "position": {
+        "x0": 89.42400360107422,
+        "y0": 230.47996520996094,
+        "x1": 101.69566853841145,
+        "y1": 236.73196411132812,
+        "width": 12.271664937337235,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 6,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "} \n{imb1} \n{imb2} \n{imb3} \n{imb_o} \n{tb1} \n{tb2}",
+      "context_after": "{bo} \n{cob_t} \n{wab} \n{m_first_name} \n{m_middle_",
+      "bbox_center": {
+        "x": 95.55983606974283,
+        "y": 233.60596466064453
+      }
+    },
+    {
+      "value": "{imb1}",
+      "key": "",
+      "position": {
+        "x0": 213.64999389648438,
+        "y0": 221.9600067138672,
+        "x1": 230.28713989257812,
+        "y1": 228.21200561523438,
+        "width": 16.63714599609375,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{placebirth_host}} \n{pb_city/mnplt} \n{pb_prov}",
+      "context_after": "{imb2} \n{imb3} \n{imb_o} \n{tb1} \n{tb2} \n{tb3} \n{b",
+      "bbox_center": {
+        "x": 221.96856689453125,
+        "y": 225.08600616455078
+      }
+    },
+    {
+      "key": "{imb2}",
+      "value": "",
+      "position": {
+        "x0": 272.3299865722656,
+        "y0": 222.5599822998047,
+        "x1": 288.9671325683594,
+        "y1": 228.81198120117188,
+        "width": 16.63714599609375,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "birth_host}} \n{pb_city/mnplt} \n{pb_prov} \n{imb1}",
+      "context_after": "{imb3} \n{imb_o} \n{tb1} \n{tb2} \n{tb3} \n{bo} \n{cob",
+      "bbox_center": {
+        "x": 280.6485595703125,
+        "y": 225.68598175048828
+      }
+    },
+
+    {
+      "key": "{imb3}",
+      "value": "",
+      "position": {
+        "x0": 231.64999389648438,
+        "y0": 230.11997985839844,
+        "x1": 248.28713989257812,
+        "y1": 236.37197875976562,
+        "width": 16.63714599609375,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 2,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "st}} \n{pb_city/mnplt} \n{pb_prov} \n{imb1} \n{imb2}",
+      "context_after": "{imb_o} \n{tb1} \n{tb2} \n{tb3} \n{bo} \n{cob_t} \n{wa",
+      "bbox_center": {
+        "x": 239.96856689453125,
+        "y": 233.24597930908203
+      }
+    },
+    {
+      "key": "{imb_o}",
+      "value": "",
+      "position": {
+        "x0": 300.5299987792969,
+        "y0": 230.11997985839844,
+        "x1": 319.94625091552734,
+        "y1": 236.37197875976562,
+        "width": 19.41625213623047,
+        "height": 6.2519989013671875
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 111,
+      "line_number": 3,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "b_city/mnplt} \n{pb_prov} \n{imb1} \n{imb2} \n{imb3}",
+      "context_after": "{tb1} \n{tb2} \n{tb3} \n{bo} \n{cob_t} \n{wab} \n{m_fi",
+      "bbox_center": {
+        "x": 310.2381248474121,
+        "y": 233.24597930908203
+      }
+    },
+    {
+      "key": "{bo}",
+      "value": "",
+      "position": {
+        "x0": 102.0199966430664,
+        "y0": 263.27001953125,
+        "x1": 112.26800079345703,
+        "y1": 269.5220031738281,
+        "width": 10.248004150390628,
+        "height": 6.251983642578125
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 112,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "1} \n{imb2} \n{imb3} \n{imb_o} \n{tb1} \n{tb2} \n{tb3}",
+      "context_after": "{cob_t} \n{wab} \n{m_first_name} \n{m_middle_name}",
+      "bbox_center": {
+        "x": 107.14399871826171,
+        "y": 266.39601135253906
+      }
+    },
+    {
+      "key": "{wab}",
+      "value": "",
+      "position": {
+        "x0": 285.8900146484375,
+        "y0": 266.1500244140625,
+        "x1": 299.9650014241536,
+        "y1": 272.4020080566406,
+        "width": 14.074986775716127,
+        "height": 6.251983642578125
+      },
+      "font": {
+        "name": "DengXian,Bold",
+        "size": 6,
+        "style": "bold",
+        "color": "#ee0000",
+        "flags": 16
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 114,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "b3} \n{imb_o} \n{tb1} \n{tb2} \n{tb3} \n{bo} \n{cob_t}",
+      "context_after": "{m_first_name} \n{m_middle_name} \n{m_last_name}",
+      "bbox_center": {
+        "x": 292.92750803629554,
+        "y": 269.27601623535156
+      }
+    },
+    {
+      "key": "{m_first_name}",
+      "value": "",
+      "position": {
+        "x0": 127.22000122070312,
+        "y0": 288.0937805175781,
+        "x1": 181.14537048339844,
+        "y1": 297.0583801269531,
+        "width": 53.92536926269531,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 115,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "mb_o} \n{tb1} \n{tb2} \n{tb3} \n{bo} \n{cob_t} \n{wab}",
+      "context_after": "{m_middle_name} \n{m_last_name} \n{m_citizenship}",
+      "bbox_center": {
+        "x": 154.18268585205078,
+        "y": 292.5760803222656
+      }
+    },
+    {
+      "key": "{m_middle_name}",
+      "value": "",
+      "position": {
+        "x0": 202.72999572753906,
+        "y0": 287.8537902832031,
+        "x1": 267.3353576660156,
+        "y1": 296.8183898925781,
+        "width": 64.60536193847656,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 115,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "b2} \n{tb3} \n{bo} \n{cob_t} \n{wab} \n{m_first_name}",
+      "context_after": "{m_last_name} \n{m_citizenship} \n{m_religion} \n{t",
+      "bbox_center": {
+        "x": 235.03267669677734,
+        "y": 292.3360900878906
+      }
+    },
+    {
+      "key": "{m_last_name}",
+      "value": "",
+      "position": {
+        "x0": 291.04998779296875,
+        "y0": 287.9737854003906,
+        "x1": 344.5153503417969,
+        "y1": 296.9383850097656,
+        "width": 53.465362548828125,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 115,
+      "line_number": 2,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{cob_t} \n{wab} \n{m_first_name} \n{m_middle_name}",
+      "context_after": "{m_citizenship} \n{m_religion} \n{tncba } \n{ncslib",
+      "bbox_center": {
+        "x": 317.7826690673828,
+        "y": 292.4560852050781
+      }
+    },
+    {
+      "key": "{m_citizenship}",
+      "value": "",
+      "position": {
+        "x0": 122.30000305175781,
+        "y0": 308.3737487792969,
+        "x1": 176.20823669433594,
+        "y1": 317.3383483886719,
+        "width": 53.908233642578125,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 116,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{m_first_name} \n{m_middle_name} \n{m_last_name}",
+      "context_after": "{m_religion} \n{tncba } \n{ncslib} \n{ncbobnd} \n{m_",
+      "bbox_center": {
+        "x": 149.25411987304688,
+        "y": 312.8560485839844
+      }
+    },
+    {
+      "key": "{m_religion}",
+      "value": "",
+      "position": {
+        "x0": 294.8900146484375,
+        "y0": 309.8137512207031,
+        "x1": 337.1562805175781,
+        "y1": 318.7783508300781,
+        "width": 42.266265869140625,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 116,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{m_middle_name} \n{m_last_name} \n{m_citizenship}",
+      "context_after": "{tncba } \n{ncslib} \n{ncbobnd} \n{m_occupation} \n{",
+      "bbox_center": {
+        "x": 316.0231475830078,
+        "y": 314.2960510253906
+      }
+    },
+    {
+      "key": "{tncba }",
+      "value": "",
+      "position": {
+        "x0": 71.54399871826172,
+        "y0": 338.7337646484375,
+        "x1": 98.79960632324219,
+        "y1": 347.6983642578125,
+        "width": 27.25560760498047,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 117,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "e} \n{m_last_name} \n{m_citizenship} \n{m_religion}",
+      "context_after": "{ncslib} \n{ncbobnd} \n{m_occupation} \n{mtb} \n{f_f",
+      "bbox_center": {
+        "x": 85.17180252075195,
+        "y": 343.216064453125
+      }
+    },
+    {
+      "key": "{ncslib}",
+      "value": "",
+      "position": {
+        "x0": 183.5,
+        "y0": 339.2137756347656,
+        "x1": 209.42901611328125,
+        "y1": 348.1783752441406,
+        "width": 25.92901611328125,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 117,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "t_name} \n{m_citizenship} \n{m_religion} \n{tncba }",
+      "context_after": "{ncbobnd} \n{m_occupation} \n{mtb} \n{f_first_name}",
+      "bbox_center": {
+        "x": 196.46450805664062,
+        "y": 343.6960754394531
+      }
+    },
+    {
+      "key": "{ncbobnd}",
+      "value": "",
+      "position": {
+        "x0": 283.3699951171875,
+        "y0": 339.2137756347656,
+        "x1": 319.43536376953125,
+        "y1": 348.1783752441406,
+        "width": 36.06536865234375,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 117,
+      "line_number": 2,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "m_citizenship} \n{m_religion} \n{tncba } \n{ncslib}",
+      "context_after": "{m_occupation} \n{mtb} \n{f_first_name} \n{f_middle",
+      "bbox_center": {
+        "x": 301.4026794433594,
+        "y": 343.6960754394531
+      }
+    },
+    {
+      "key": "{m_occupation}",
+      "value": "",
+      "position": {
+        "x0": 122.54000091552734,
+        "y0": 367.5337829589844,
+        "x1": 177.78536987304688,
+        "y1": 376.4983825683594,
+        "width": 55.24536895751953,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 118,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "ip} \n{m_religion} \n{tncba } \n{ncslib} \n{ncbobnd}",
+      "context_after": "{mtb} \n{f_first_name} \n{f_middle_name} \n{f_last_",
+      "bbox_center": {
+        "x": 150.1626853942871,
+        "y": 372.0160827636719
+      }
+    },
+    {
+      "key": "{mtb}",
+      "value": "",
+      "position": {
+        "x0": 332.4700012207031,
+        "y0": 360.93377685546875,
+        "x1": 351.2353820800781,
+        "y1": 369.89837646484375,
+        "width": 18.765380859375,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 119,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "} \n{tncba } \n{ncslib} \n{ncbobnd} \n{m_occupation}",
+      "context_after": "{f_first_name} \n{f_middle_name} \n{f_last_name}",
+      "bbox_center": {
+        "x": 341.8526916503906,
+        "y": 365.41607666015625
+      }
+    },
+    {
+      "key": "{residence}",
+      "value": "",
+      "position": {
+        "x0": 135.13999938964844,
+        "y0": 393.3337707519531,
+        "x1": 175.26536560058594,
+        "y1": 402.2983703613281,
+        "width": 40.1253662109375,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 121,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{f_first_name} \n{f_middle_name} \n{f_last_name}",
+      "context_after": "{province} \n{city/mnplt} \n{registration_n} \n{m_c",
+      "bbox_center": {
+        "x": 155.2026824951172,
+        "y": 397.8160705566406
+      }
+    },
+    {
+      "key": "{m_city/mnplt}",
+      "value": "",
+      "position": {
+        "x0": 239.57000732421875,
+        "y0": 393.3337707519531,
+        "x1": 289.8953552246094,
+        "y1": 402.2983703613281,
+        "width": 50.325347900390625,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 124,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "nce} \n{province} \n{city/mnplt} \n{registration_n}",
+      "context_after": "{m_prov} \n{f_citizenship} \n{f_religion} \n{ftb}",
+      "bbox_center": {
+        "x": 264.73268127441406,
+        "y": 397.8160705566406
+      }
+    },
+    {
+      "key": "{m_prov}",
+      "value": "",
+      "position": {
+        "x0": 319.989990234375,
+        "y0": 393.6937561035156,
+        "x1": 352.07537841796875,
+        "y1": 402.6583557128906,
+        "width": 32.08538818359375,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 124,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{city/mnplt} \n{registration_n} \n{m_city/mnplt}",
+      "context_after": "{f_citizenship} \n{f_religion} \n{ftb} \n{f_occupat",
+      "bbox_center": {
+        "x": 336.0326843261719,
+        "y": 398.1760559082031
+      }
+    },
+    {
+      "key": "{f_first_name}",
+      "value": "",
+      "position": {
+        "x0": 125.41999816894531,
+        "y0": 414.93377685546875,
+        "x1": 174.90536499023438,
+        "y1": 423.89837646484375,
+        "width": 49.48536682128906,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 120,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "ba } \n{ncslib} \n{ncbobnd} \n{m_occupation} \n{mtb}",
+      "context_after": "{f_middle_name} \n{f_last_name} \n{residence} \n{pr",
+      "bbox_center": {
+        "x": 150.16268157958984,
+        "y": 419.41607666015625
+      }
+    },
+    {
+      "key": "{f_middle_name}",
+      "value": "",
+      "position": {
+        "x0": 202.61000061035156,
+        "y0": 415.8937683105469,
+        "x1": 262.7753601074219,
+        "y1": 424.8583679199219,
+        "width": 60.16535949707031,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 120,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{ncbobnd} \n{m_occupation} \n{mtb} \n{f_first_name}",
+      "context_after": "{f_last_name} \n{residence} \n{province} \n{city/mn",
+      "bbox_center": {
+        "x": 232.69268035888672,
+        "y": 420.3760681152344
+      }
+    },
+    {
+      "key": "{f_last_name}",
+      "value": "",
+      "position": {
+        "x0": 290.80999755859375,
+        "y0": 414.93377685546875,
+        "x1": 339.8353576660156,
+        "y1": 423.89837646484375,
+        "width": 49.025360107421875,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 120,
+      "line_number": 2,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "upation} \n{mtb} \n{f_first_name} \n{f_middle_name}",
+      "context_after": "{residence} \n{province} \n{city/mnplt} \n{registra",
+      "bbox_center": {
+        "x": 315.3226776123047,
+        "y": 419.41607666015625
+      }
+    },
+    {
+      "key": "{f_citizenship}",
+      "value": "",
+      "position": {
+        "x0": 123.5,
+        "y0": 438.11376953125,
+        "x1": 172.98536682128906,
+        "y1": 447.078369140625,
+        "width": 49.48536682128906,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 125,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "plt} \n{registration_n} \n{m_city/mnplt} \n{m_prov}",
+      "context_after": "{f_religion} \n{ftb} \n{f_occupation} \n{date_place",
+      "bbox_center": {
+        "x": 148.24268341064453,
+        "y": 442.5960693359375
+      }
+    },
+    {
+      "key": "{f_religion}",
+      "value": "",
+      "position": {
+        "x0": 297.2900085449219,
+        "y0": 436.91375732421875,
+        "x1": 335.1553649902344,
+        "y1": 445.87835693359375,
+        "width": 37.8653564453125,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 125,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "on_n} \n{m_city/mnplt} \n{m_prov} \n{f_citizenship}",
+      "context_after": "{ftb} \n{f_occupation} \n{date_place_marriage_pare",
+      "bbox_center": {
+        "x": 316.2226867675781,
+        "y": 441.39605712890625
+      }
+    },
+
+    {
+      "key": "{f_occupation}",
+    "value": "",
+      "position": {
+        "x0": 123.73999786376953,
+        "y0": 462.7137756347656,
+        "x1": 174.5453643798828,
+        "y1": 471.6783752441406,
+        "width": 50.80536651611328,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 126,
+      "line_number": 1,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "{m_prov} \n{f_citizenship} \n{f_religion} \n{ftb}",
+      "context_after": "{date_place_marriage_parents} \nAT_1 \nAT_4 \nAT_2",
+      "bbox_center": {
+        "x": 149.14268112182617,
+        "y": 467.1960754394531
+      }
+    },
+    {
+      "key": "{ftb}",
+      "position": {
+        "x0": 334.3900146484375,
+        "y0": 458.3937683105469,
+        "x1": 348.7153625488281,
+        "y1": 467.3583679199219,
+        "width": 14.325347900390625,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 126,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "/mnplt} \n{m_prov} \n{f_citizenship} \n{f_religion}",
+      "context_after": "{f_occupation} \n{date_place_marriage_parents} \nA",
+      "bbox_center": {
+        "x": 341.5526885986328,
+        "y": 462.8760681152344
+      }
+    }
+  ],
+  "static_text": []
+}
