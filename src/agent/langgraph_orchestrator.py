@@ -137,6 +137,10 @@ class LangGraphOrchestrator:
                 conversation_id=state["conversation_id"],
                 limit=10
             )
+
+            print(f"🔍 _load_conversation_memory → history ({len(state['conversation_history'])} msgs):")
+            for i, m in enumerate(state["conversation_history"]):
+                print(f"   [{i:2d}] {type(m).__name__!r}: {repr(m.content)} length={len(m.content)}")
             
             # Convert to LangChain message format
             history_messages = []
@@ -144,6 +148,10 @@ class LangGraphOrchestrator:
                 try:
                     body_data = json.loads(msg["body"])
                     content = body_data.get("text", str(body_data))
+
+                    if not content.strip():
+                        print(f"  – skipping empty DB entry: {msg}")
+                        continue
                     
                     if msg["sender"] == "user":
                         history_messages.append(HumanMessage(content=content))
@@ -169,6 +177,10 @@ class LangGraphOrchestrator:
         # Start with conversation history
         all_messages = state["conversation_history"].copy()
 
+        print(f"🔍 _prepare_messages_for_llm → combined ({len(all_messages)} msgs):")
+        for i, m in enumerate(all_messages):
+            print(f"   [{i:2d}] {type(m).__name__!r}: {repr(m.content)} length={len(m.content)}")
+
         # Add current conversation messages (excluding tool messages)
         current_messages = []
         for msg in state["messages"]:
@@ -181,8 +193,9 @@ class LangGraphOrchestrator:
         # Limit total context to reasonable size (last 20 messages)
         if len(all_messages) > 20:
             all_messages = all_messages[-20:]
-        
-        return all_messages
+
+        filtered = [m for m in all_messages if getattr(m, "content", "").strip()]
+        return filtered
     
     async def _agent_node(self, state: AgentState) -> AgentState:
         """Main agent processing node with proper message handling"""
@@ -202,17 +215,17 @@ class LangGraphOrchestrator:
                *self._prepare_messages_for_llm(state),
             ]
 
-            # DEBUG: Print messages being sent to LLM
-            print("🧠  _agent_node – sending to LLM")
-            for m in llm_messages:
-                print("   ", type(m).__name__, "→", m.content[:120])
-
             if not llm_messages:
                 # Create a default response if no messages
                 default_response = AIMessage(content="I'm ready to help you with your request.")
                 state["messages"].append(default_response)
                 state["workflow_status"] = WorkflowStatus.COMPLETED
                 return state
+            
+            print("➤ Payload being sent to Gemini:")
+            for idx, m in enumerate(llm_messages):
+                content = getattr(m, "content", None)
+                print(f"  [{idx:2d}] ({type(m).__name__}): {repr(content)}  length={len(content or '')}")
             
             # Call the LLM with tools
             response = await self.llm_with_tools.ainvoke(llm_messages)
