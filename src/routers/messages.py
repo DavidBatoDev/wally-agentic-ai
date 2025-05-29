@@ -196,51 +196,6 @@ async def handle_user_action(
             "error": str(e),
             "response": error_response
         }
-
-@router.get("/{conversation_id}/workflow-status", response_model=WorkflowStatusResponse)
-async def get_workflow_status(
-    conversation_id: UUID4,
-    current_user: User = Depends(get_current_user),
-) -> WorkflowStatusResponse:
-    """
-    Get the current workflow status for a conversation.
-    """
-    try:
-        # ... existing validation code ...
-        
-        # Get the orchestrator to check workflow state
-        orchestrator = get_langgraph_orchestrator()
-        
-        # Get the actual workflow state from LangGraph
-        # This is a simplified version - you might want to implement 
-        # a proper state query method in your orchestrator
-        try:
-            # You can add a method to your orchestrator to get current state
-            # For now, return a basic status
-            return WorkflowStatusResponse(
-                conversation_id=conversation_id,
-                workflow_status="completed",
-                steps_completed=0,
-                total_steps=0,
-                user_confirmation_pending=False
-            )
-        except Exception as state_error:
-            print(f"Error getting workflow state: {state_error}")
-            return WorkflowStatusResponse(
-                conversation_id=conversation_id,
-                workflow_status="unknown",
-                steps_completed=0,
-                total_steps=0,
-                user_confirmation_pending=False
-            )
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get workflow status: {str(e)}",
-        )
     
     
 @router.get("/{conversation_id}", response_model=Dict[str, Any])
