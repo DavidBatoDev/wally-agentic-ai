@@ -21,7 +21,7 @@ sys.path.append(str(backend_dir))
 
 # Use absolute imports instead of relative imports
 from src.config import get_settings
-from src.routers import conversations, messages, upload, user
+from src.routers import conversations, messages, user, uploads
 from src.dependencies.agent import get_langgraph_orchestrator
 
 # Load settings
@@ -46,7 +46,7 @@ app.add_middleware(
 # Include routers
 app.include_router(conversations.router, prefix="/api/conversations", tags=["Conversations"])
 app.include_router(messages.router, prefix="/api/messages", tags=["Messages"])
-app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
+app.include_router(uploads.router, prefix="/api/uploads", tags=["Upload"])
 app.include_router(user.router, prefix="/api/user", tags=["User"])
 
 @app.get("/")

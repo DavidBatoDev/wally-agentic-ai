@@ -1,0 +1,107 @@
+example_payload from supabase
+{
+  "template_name": "PSA 1993",
+  "language": "English",
+  "doc_info": "",
+  "page_size": "A4",
+  "fillable_text_info": [
+    {
+      "key": "{province}",
+      "value": "manila",
+      "position": {
+        "x0": 71.06400299072266,
+        "y0": 110.10380554199219,
+        "x1": 106.745361328125,
+        "y1": 119.06840515136719,
+        "width": 35.681358337402344,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 122,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "me} \n{f_middle_name} \n{f_last_name} \n{residence}",
+      "context_after": "{city/mnplt} \n{registration_n} \n{m_city/mnplt}",
+      "bbox_center": {
+        "x": 88.90468215942383,
+        "y": 114.58610534667969
+      }
+    },
+    {
+      "key": "{city/mnplt}",
+      "value": "PUP",
+      "position": {
+        "x0": 96.02400207519531,
+        "y0": 120.30375671386719,
+        "x1": 135.30535888671875,
+        "y1": 129.2683563232422,
+        "width": 39.28135681152344,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 123,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "le_name} \n{f_last_name} \n{residence} \n{province}",
+      "context_after": "{registration_n} \n{m_city/mnplt} \n{m_prov} \n{f_c",
+      "bbox_center": {
+        "x": 115.66468048095703,
+        "y": 124.78605651855469
+      }
+    },
+    {
+      "key": "{first_name}",
+      "value": "David",
+      "position": {
+        "x0": 129.6199951171875,
+        "y0": 144.3037567138672,
+        "x1": 172.38536071777344,
+        "y1": 153.2683563232422,
+        "width": 42.76536560058594,
+        "height": 8.964599609375
+      },
+      "font": {
+        "name": "ArialMT",
+        "size": 8.039999961853027,
+        "style": "normal",
+        "color": "#ee0000",
+        "flags": 0
+      },
+      "alignment": "left",
+      "page_number": 1,
+      "block_number": 107,
+      "line_number": 0,
+      "span_number": 0,
+      "rotation": 0,
+      "confidence": 1,
+      "context_before": "atistics Authority \n \n \n \n \n \n \nBARCODE \nBARCODE",
+      "context_after": "{middle_name} \n{last_name} \n{fe} \n{ma} \n{db_day}",
+      "bbox_center": {
+        "x": 151.00267791748047,
+        "y": 148.7860565185547
+      }
+    },
+    ...........
+]
+}
+

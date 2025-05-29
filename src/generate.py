@@ -2,11 +2,24 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form
 from pydantic import BaseModel, ValidationError
 from typing import List, Dict, Any
 import io
-import re      
+import re
+import os
 import json
 import fitz
 from fitz import Rect, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER, TEXT_ALIGN_RIGHT, TEXT_ALIGN_JUSTIFY
 from fastapi.responses import StreamingResponse
+
+from supabase import create_client, Client
+
+try:
+    supabase: Client = create_client(
+        os.environ.get("SUPABASE_URL", ""),
+        os.environ.get("SUPABASE_KEY", "")
+    )
+    print("Supabase client configured successfully")
+except Exception as e:
+    print(f"Error configuring Supabase: {e}")
+    supabase = None
 
 app = FastAPI(title="PDF Text Extraction API", version="1.0.0")
 
@@ -78,6 +91,18 @@ def get_font_style(flags: int) -> str:
     if flags & 2**2:  # Monospace
         styles.append("monospace")
     return " ".join(styles) if styles else "normal"
+
+def get_safe_font(font_name: str) -> str:
+    """Return a safe font name, falling back to Helvetica if necessary"""
+    # Map common Windows fonts to PDF base-14 fonts
+    font_fallback = {
+        "ArialMT": "Helvetica",
+        "Arial": "Helvetica",
+        "Arial-BoldMT": "Helvetica-Bold",
+        "TimesNewRomanPSMT": "Times-Roman",
+        # Add more mappings as needed
+    }
+    return font_fallback.get(font_name, font_name) or "Helvetica"
 
 def get_alignment(span_bbox, line_bbox) -> str:
     """Determine text alignment based on position within line"""
@@ -209,7 +234,7 @@ def search_text_in_pdf(pdf_bytes: bytes, search_term: str, case_sensitive: bool 
     
     return matches
 
-@app.post("/extract-text", response_model=TextMatch)
+@app.post("/extract-text-position", response_model=TextMatch)
 async def extract_text_from_pdf(
     search_terms: List[str] = Query(..., description="List of terms to search"),
     case_sensitive: bool = Query(False, description="Case-sensitive search?"),
@@ -231,7 +256,7 @@ async def extract_text_from_pdf(
             hits = search_text_in_pdf(pdf_bytes, term, case_sensitive)
             if hits:                         # keep the first hit for this term
                 flat_matches.append(hits[0])
-            return flat_matches[0]
+            return flat_matches
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing request: {str(e)}")
@@ -309,99 +334,246 @@ FONT_FALLBACK = {
     # add more if you need …
 }
 
+class FillableDataRequest(BaseModel):
+    template_id: str
+    data: Dict[str, str]
+
+# Replace your existing insert-text-batch endpoint with this:
+# Add these imports at the top with your existing imports
+from supabase import create_client, Client
+
+# Add this new Pydantic model for the request body
+class FillableDataRequest(BaseModel):
+    template_id: str  # Changed to str to handle UUID
+    data: Dict[str, str]
+
+# Replace your existing insert-text-batch endpoint with this:
 @app.post(
     "/insert-text-batch",
-    summary="Insert many values into a PDF using an array of field details"
+    summary="Insert text values into PDF using template data from Supabase"
 )
 async def insert_text_batch(
-    payload_json: str = Form(..., description="JSON array with field specs"),
-    pdf_file: UploadFile = File(..., description="PDF to modify")
+    pdf_file: UploadFile = File(..., description="PDF to modify"),
+    template_id: str = Form(..., description="Template UUID from Supabase"),
+    data: str = Form(..., description="JSON string of field values")
 ):
-    # 1️⃣  Parse / validate payload
+    """
+    Insert text into PDF using template configuration from Supabase database.
+    
+    Args:
+        pdf_file: PDF file to modify
+        template_id: UUID of the template from Supabase
+        data: JSON string of field mappings (e.g., '{"{province}": "Ontario"}')
+    
+    Returns:
+        Modified PDF file
+    """
+    
+    # 1️⃣ Parse the data JSON string
     try:
-        raw_list = json.loads(payload_json)
-        blocks: List[BatchInsertBlock] = [
-            BatchInsertBlock.model_validate(item) for item in raw_list
-        ]
-    except (json.JSONDecodeError, ValidationError) as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid payload: {exc}")
-
-    # 2️⃣  Make sure we got a PDF
+        field_data = json.loads(data)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in data parameter: {str(e)}")
+    
+    # 2️⃣ Check if Supabase is configured
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    
+    # 3️⃣ Fetch template from Supabase
+    try:
+        response = supabase.table("templates").select("info_json").eq("id", template_id).single().execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Template with ID {template_id} not found")
+        
+        template_info = response.data["info_json"]
+        fillable_text_info = template_info.get("fillable_text_info", [])
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching template: {str(e)}")
+    
+    # 4️⃣ Create updated fillable_text_info with provided values
+    updated_fields = []
+    
+    for field in fillable_text_info:
+        # Create a copy of the field
+        updated_field = field.copy()
+        
+        # Update the value if provided in request data
+        field_key = field.get("key", "")
+        if field_key in field_data:
+            updated_field["value"] = field_data[field_key]
+        
+        updated_fields.append(updated_field)
+    
+    # 5️⃣ Validate PDF file
     if not pdf_file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="File must be a PDF")
+    
     pdf_bytes = await pdf_file.read()
-
-    # 3️⃣  Open document
+    
+    # 6️⃣ Open PDF document
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cannot open PDF: {e}")
-
-    # 4️⃣  Loop & draw
+    
+    # 7️⃣ Insert text for each field that has a value
     try:
-        for blk in blocks:
-            page = doc[blk.page_number - 1]
-            bbox = Rect(blk.position.x0, blk.position.y0,
-                        blk.position.x1, blk.position.y1)
-
-            # font handling
-            requested_font = blk.font.name or "Helvetica"
-            font_name = FONT_FALLBACK.get(requested_font, requested_font)
-
-            # colour 0-1 tuple
-            # r, g, b = tuple(int(blk.font.color.lstrip("#")[i:i+2], 16) / 255
-            #                 for i in (0, 2, 4))
+        for field in updated_fields:
+            # Skip fields without values
+            if not field.get("value"):
+                continue
+                
+            page = doc[field["page_number"] - 1]
+            position = field["position"]
+            bbox = Rect(position["x0"], position["y0"], position["x1"], position["y1"])
             
-            # black if no colour specified
-            r,g,b = 0, 0, 0
-
-            align = blk.alignment.lower()
-            if align == "left":
-                # baseline anchor so it's not hidden under lines
-                baseline = blk.position.y1 - 0.15 * (blk.font.size or 10)
-                page.insert_text(
-                    (blk.position.x0, baseline),
-                    blk.value,
-                    fontname=font_name,
-                    fontsize=blk.font.size or 10,
-                    color=(r, g, b)
-                )
-
+            # Font handling with robust fallback
+            font_info = field["font"]
+            requested_font = font_info.get("name", "Helvetica")
+            safe_font = get_safe_font(requested_font)
+            
+            # Log font fallback for debugging (optional)
+            if requested_font != safe_font:
+                print(f"Font fallback: '{requested_font}' -> '{safe_font}'")
+            
+            # Color handling (default to black if not specified)
+            color_hex = font_info.get("color", "#000000")
+            if color_hex.startswith("#"):
+                # r = int(color_hex[1:3], 16) / 255
+                # g = int(color_hex[3:5], 16) / 255
+                # b = int(color_hex[5:7], 16) / 255
+                # for now let's use black 
+                r, g, b = 0, 0, 0
             else:
-                # choose the TEXT_ALIGN constant
-                if align == "center":
-                    flag = TEXT_ALIGN_CENTER
-                elif align == "right":
-                    flag = TEXT_ALIGN_RIGHT
-                elif align == "justify":
-                    flag = TEXT_ALIGN_JUSTIFY
+                r, g, b = 0, 0, 0
+            
+            # Alignment handling
+            alignment = field.get("alignment", "left").lower()
+            
+            if alignment == "left":
+                # For left alignment, use insert_text with baseline positioning
+                baseline = position["y1"] - 0.15 * font_info.get("size", 10)
+                try:
+                    page.insert_text(
+                        (position["x0"], baseline),
+                        field["value"],
+                        fontname=safe_font,
+                        fontsize=font_info.get("size", 10),
+                        color=(r, g, b)
+                    )
+                except Exception as font_error:
+                    # Ultimate fallback: use Helvetica
+                    print(f"Font error with '{safe_font}', using Helvetica: {font_error}")
+                    page.insert_text(
+                        (position["x0"], baseline),
+                        field["value"],
+                        fontname="Helvetica",
+                        fontsize=font_info.get("size", 10),
+                        color=(r, g, b)
+                    )
+            else:
+                # For other alignments, use insert_textbox
+                if alignment == "center":
+                    align_flag = TEXT_ALIGN_CENTER
+                elif alignment == "right":
+                    align_flag = TEXT_ALIGN_RIGHT
+                elif alignment == "justify":
+                    align_flag = TEXT_ALIGN_JUSTIFY
                 else:
-                    flag = TEXT_ALIGN_LEFT
-
-                page.insert_textbox(
-                    bbox,
-                    blk.value,
-                    fontname=font_name,
-                    fontsize=blk.font.size or 10,
-                    color=(r, g, b),
-                    align=flag
-                )
-
-        # save to buffer
+                    align_flag = TEXT_ALIGN_LEFT
+                
+                try:
+                    page.insert_textbox(
+                        bbox,
+                        field["value"],
+                        fontname=safe_font,
+                        fontsize=font_info.get("size", 10),
+                        color=(r, g, b),
+                        align=align_flag
+                    )
+                except Exception as font_error:
+                    # Ultimate fallback: use Helvetica
+                    print(f"Font error with '{safe_font}', using Helvetica: {font_error}")
+                    page.insert_textbox(
+                        bbox,
+                        field["value"],
+                        fontname="Helvetica",
+                        fontsize=font_info.get("size", 10),
+                        color=(r, g, b),
+                        align=align_flag
+                    )
+        
+        # 8️⃣ Save modified PDF to buffer
         buf = io.BytesIO()
         doc.save(buf)
         doc.close()
         buf.seek(0)
-
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF edit failed: {e}")
-
-    # 5️⃣  stream back
+        raise HTTPException(status_code=500, detail=f"PDF modification failed: {str(e)}")
+    
+    # 9️⃣ Return the updated fields info and the modified PDF
+    # For now, we'll just return the PDF. If you want to return the JSON data instead,
+    # you can return updated_fields directly
+    
     headers = {
-        "Content-Disposition":
-            f'attachment; filename="modified_{pdf_file.filename}"'
+        "Content-Disposition": f'attachment; filename="filled_{pdf_file.filename}"'
     }
     return StreamingResponse(buf, media_type="application/pdf", headers=headers)
+
+
+# Alternative endpoint if you want to return just the populated field data without modifying PDF
+@app.post(
+    "/get-populated-fields",
+    summary="Get populated field data from template without modifying PDF"
+)
+async def get_populated_fields(
+    template_id: str = Form(..., description="Template UUID from Supabase"),
+    data: str = Form(..., description="JSON string of field values")
+):
+    """
+    Get populated field information from template without modifying PDF.
+    Returns the fillable_text_info with populated values.
+    """
+    
+    # Parse the data JSON string
+    try:
+        field_data = json.loads(data)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON in data parameter: {str(e)}")
+    
+    # Check if Supabase is configured
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Supabase client not configured")
+    
+    # Fetch template from Supabase
+    try:
+        response = supabase.table("templates").select("info_json").eq("id", template_id).single().execute()
+        if not response.data:
+            raise HTTPException(status_code=404, detail=f"Template with ID {template_id} not found")
+        
+        template_info = response.data["info_json"]
+        fillable_text_info = template_info.get("fillable_text_info", [])
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching template: {str(e)}")
+    
+    # Create updated fillable_text_info with provided values
+    updated_fields = []
+    
+    for field in fillable_text_info:
+        # Create a copy of the field
+        updated_field = field.copy()
+        
+        # Update the value if provided in request data
+        field_key = field.get("key", "")
+        if field_key in field_data:
+            updated_field["value"] = field_data[field_key]
+        
+        updated_fields.append(updated_field)
+    
+    return updated_fields
 
 
 @app.get("/")

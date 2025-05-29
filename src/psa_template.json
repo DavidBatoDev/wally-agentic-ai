@@ -1,8 +1,9 @@
 {
   "template_name": "PSA 1993",
   "language": "English",
+  "doc_info": "",
   "page_size": "A4",
-    "required_fields": {
+  "required_fields": {
     "{province}": "Province of residence",
     "{city/mnplt}": "City or municipality of residence",
     "{first_name}": "Given name of the individual",
@@ -43,7 +44,7 @@
     "{f_occupation}": "Father’s occupation",
     "{ftb}": "Father’s time-to-birth checkbox"
   },
-  "fillable_text": [
+  "fillable_text_info": [
     {
       "key": "{province}",
       "value": "manila",
@@ -1357,6 +1358,5 @@
         "y": 462.8760681152344
       }
     }
-  ],
-  "static_text": []
+  ]
 }
