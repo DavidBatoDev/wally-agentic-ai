@@ -302,75 +302,7 @@ class SupabaseClient:
         
         return response.data[0]
     
-    def store_memory(
-        self,
-        conversation_id: str,
-        content: str,
-        embedding: List[float],
-        meta: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Store a memory entry in the RAG store.
-        
-        Args:
-            conversation_id: The conversation ID
-            content: The text content
-            embedding: The vector embedding
-            meta: Optional metadata
-            
-        Returns:
-            The created memory entry as a dictionary
-        """
-        memory_data = {
-            "conversation_id": conversation_id,
-            "content": content,
-            "embedding": embedding,
-            "meta": meta or {}
-        }
-
-        if not self._should_embed(meta.get("sender"), meta.get("type", "text")):
-            return  # skip embedding entirely
-        
-        response = self.client.table("rag_memory").insert(memory_data).execute()
-        return response.data[0]
-    
-    # Simplified version of the should_embed function, in the future call llm for gatekeeping
-    def _should_embed(self, sender: str, kind: str) -> bool:
-        # Simulation of a decision-making process for embedding
-        return sender == "user" and kind == "text"
-    
-    def search_memory(
-        self,
-        conversation_id: str,
-        embedding: List[float],
-        limit: int = 5,
-        similarity_threshold: float = 0.7
-    ) -> List[Dict[str, Any]]:
-        """
-        Search for similar memories using vector similarity.
-        
-        Args:
-            conversation_id: The conversation ID
-            embedding: The query embedding vector
-            limit: Maximum number of results to return
-            similarity_threshold: Minimum similarity threshold
-            
-        Returns:
-            List of similar memory entries
-        """
-        # Using RPC for vector search since PostgREST doesn't support it directly
-        response = self.client.rpc(
-            "match_documents",
-            {
-                "query_embedding": embedding,
-                "match_threshold": similarity_threshold,
-                "match_count": limit,
-                "p_conversation_id": conversation_id
-            }
-        ).execute()
-        
-        return response.data
-
+    # for uploading files to Supabase Storage
     def upload_file(self, bucket: str, object_key: str, file_content: bytes, file_type: str) -> Dict[str, Any]:
         """
         Upload a file to Supabase Storage.
@@ -395,10 +327,12 @@ class SupabaseClient:
             # Get the public URL
             public_url = self.client.storage.from_(bucket).get_public_url(object_key)
             
+            # Return a proper dictionary response
             return {
                 "key": object_key,
                 "public_url": public_url,
-                **response
+                "success": True,
+                "path": getattr(response, 'path', object_key) if hasattr(response, 'path') else object_key
             }
         except Exception as e:
             logger.error(f"Error uploading file to Supabase Storage: {str(e)}")
