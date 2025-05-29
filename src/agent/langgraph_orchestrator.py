@@ -182,9 +182,9 @@ class LangGraphOrchestrator:
                         continue
                     
                     if msg["sender"] == "user":
-                        history_messages.append(HumanMessage(content=f"this is a history from the user message: {content}"))
+                        history_messages.append(HumanMessage(content=f"{content}"))
                     elif msg["sender"] == "assistant":
-                        history_messages.append(AIMessage(content=f"this is a history from assistant message: {content}"))
+                        history_messages.append(AIMessage(content=f"{content}"))
 
                 except (json.JSONDecodeError, KeyError) as e:
                     print(f"Error parsing message: {e}")
