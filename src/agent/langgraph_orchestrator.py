@@ -353,22 +353,25 @@ class LangGraphOrchestrator:
         if not messages:
             return state
         
-        # Check if any UI tools were used
+        # Check if any UI tools were used in the CURRENT interaction
         ui_tool_used = False
         tool_results = []
         
-        # Look for recent tool messages
-        for message in reversed(messages[-5:]):
+        # Only look at the most recent tool messages (last 3 messages)
+        recent_messages = messages[-3:] if len(messages) > 3 else messages
+        
+        for message in recent_messages:
             if isinstance(message, ToolMessage):
                 try:
                     content = json.loads(message.content)
                     if content.get("kind") in ["buttons", "inputs", "file_card", "upload_button"]:
                         ui_tool_used = True
-                        print(f"UI tool used: {content.get('kind')}")
+                        print(f"UI tool used in current cycle: {content.get('kind')}")
                         break
                 except (json.JSONDecodeError, AttributeError):
                     # Regular tool result
-                    tool_results.append(message.content)
+                    if hasattr(message, 'content'):
+                        tool_results.append(message.content)
         
         # Store whether UI tool was used for decision making
         state["context"]["ui_tool_used"] = ui_tool_used
@@ -384,7 +387,8 @@ class LangGraphOrchestrator:
             print(f"Added summary message: {summary_message.content}")
         
         return state
-    
+
+
     def _should_continue(self, state: AgentState) -> str:
         """Determine if we should continue to tools or end"""
         
@@ -403,41 +407,77 @@ class LangGraphOrchestrator:
     def _after_tool_processing(self, state: AgentState) -> str:
         """Decide what to do after tool processing"""
         
-        # If a UI tool was used, end the conversation
+        # Check if a UI tool was used in the current cycle
         if state["context"].get("ui_tool_used", False):
+            print("Ending after UI tool usage")
             return "end"
         
         # For regular tools (like math), always end after processing
-        # The summary response has been added, no need to continue
+        print("Ending after regular tool processing")
         return "end"
     
     async def _finalize_response(self, state: AgentState) -> AgentState:
-        """Finalize the response"""
+        """Finalize the response - only use UI tools from current workflow cycle"""
         
         messages = state["messages"]
         
-        # Look for UI tool responses in the message history
-        for message in reversed(messages):
+        # Only look for UI tool responses from the CURRENT workflow cycle
+        # We need to be more selective about which tool messages to use
+        current_cycle_ui_response = None
+        
+        # Look for UI tool responses, but only from recent messages (last 3-5 messages)
+        # This prevents using stale UI responses from previous interactions
+        recent_messages = messages[-5:] if len(messages) > 5 else messages
+        
+        for message in reversed(recent_messages):
             if isinstance(message, ToolMessage):
                 try:
                     content = json.loads(message.content)
                     if content.get("kind") in ["buttons", "inputs", "file_card", "upload_button"]:
-                        # Use the UI tool response as the final response
-                        state["context"]["final_response"] = content
-                        state["workflow_status"] = WorkflowStatus.COMPLETED
-                        return state
+                        # Check if this tool response is from the current interaction
+                        # by verifying it came after the last user message
+                        current_cycle_ui_response = content
+                        print(f"Found recent UI tool response: {content.get('kind')}")
+                        break
                 except (json.JSONDecodeError, AttributeError):
                     continue
         
-        # If no UI tool response found, use the last AI message
+        # Only use UI response if it's from the current cycle AND we actually called a tool
+        # Check if the last AI message has tool calls to confirm we intended to use a tool
+        last_ai_message = None
+        for message in reversed(messages):
+            if isinstance(message, AIMessage):
+                last_ai_message = message
+                break
+        
+        # Use UI response only if:
+        # 1. We found a recent UI response
+        # 2. The last AI message had tool calls (indicating we intended to use tools)
+        # 3. We haven't explicitly marked this as a text-only response
+        use_ui_response = (
+            current_cycle_ui_response and 
+            last_ai_message and 
+            hasattr(last_ai_message, 'tool_calls') and 
+            last_ai_message.tool_calls and
+            not state["context"].get("force_text_response", False)
+        )
+        
+        if use_ui_response:
+            state["context"]["final_response"] = current_cycle_ui_response
+            state["workflow_status"] = WorkflowStatus.COMPLETED
+            print(f"Using UI response: {current_cycle_ui_response.get('kind')}")
+            return state
+        
+        # Otherwise, use the last AI message as text response
         if messages:
-            # Look for the last AI message
+            # Look for the last AI message with actual content
             for message in reversed(messages):
-                if isinstance(message, AIMessage) and hasattr(message, 'content') and message.content:
+                if isinstance(message, AIMessage) and hasattr(message, 'content') and message.content.strip():
                     final_response = {
                         "kind": "text",
                         "text": message.content
                     }
+                    print(f"Using text response: {message.content[:50]}...")
                     break
             else:
                 final_response = {
