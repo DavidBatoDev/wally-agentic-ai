@@ -67,46 +67,35 @@ class LangGraphOrchestrator:
         self.graph = self._build_workflow_graph()
     
     def _build_workflow_graph(self) -> StateGraph:
-        """Build the LangGraph workflow (1 LLM call per turn)."""
+        """Build the simplified LangGraph workflow."""
 
         workflow = StateGraph(AgentState)
 
         # ── Nodes ──────────────────────────────────────────────
-        workflow.add_node("load_buffer",          self._load_conversation_buffer)
-        workflow.add_node("agent",                self._agent_node)
-        workflow.add_node("tools",                self._tool_node)
-        workflow.add_node("process_tool_results", self._process_tool_results)
-        workflow.add_node("finalize",             self._finalize_response)
-        workflow.add_node("save_buffer",          self._save_conversation_buffer)
+        workflow.add_node("load_buffer", self._load_conversation_buffer)
+        workflow.add_node("agent", self._agent_node)
+        workflow.add_node("tools", self._tool_node)
+        workflow.add_node("finalize", self._finalize_response)  # Combined processing + finalization
+        workflow.add_node("save_buffer", self._save_conversation_buffer)
 
         # ── Entry ──────────────────────────────────────────────
         workflow.set_entry_point("load_buffer")
 
         # ── Edges ──────────────────────────────────────────────
-        workflow.add_edge("load_buffer", "agent")                 # buffer → agent
-        workflow.add_edge("tools", "process_tool_results")        # tools  → results
+        workflow.add_edge("load_buffer", "agent")
+        workflow.add_edge("tools", "finalize")  # Tools go directly to finalize
+        workflow.add_edge("finalize", "save_buffer")
+        workflow.add_edge("save_buffer", END)
 
-        # agent decides: call tools or finish
+        # Agent decides: call tools or finish
         workflow.add_conditional_edges(
             "agent",
             self._should_continue,
             {
                 "tools": "tools",
-                "end":   "finalize",
+                "end": "finalize",  # No tools needed, go straight to finalize
             },
         )
-
-        # after processing tool output, usually just finish
-        workflow.add_conditional_edges(
-            "process_tool_results",
-            self._after_tool_processing,
-            {
-                "end": "finalize",
-            },
-        )
-
-        workflow.add_edge("finalize", "save_buffer")              # finalize → save
-        workflow.add_edge("save_buffer", END)                     # save → END
 
         # ── Compile with in-memory checkpointing ───────────────
         return workflow.compile(checkpointer=self.memory)
@@ -151,39 +140,82 @@ class LangGraphOrchestrator:
         return state
 
     def _prepare_messages_for_llm(self, state: AgentState) -> List[BaseMessage]:
-        """Prepare messages for LLM including conversation history from buffer"""
-        
-        # Start with conversation history from buffer
-        all_messages = state["conversation_history"].copy()
+        """
+        Prepare messages for the LLM. We include at most one ToolMessage per 'kind',
+        but we always send the very latest HumanMessage—even if it exactly matches history.
+        """
 
-        # Add current conversation messages (excluding tool messages and avoiding duplicates)
-        current_messages = []
+        # 1) Check if the last AIMessage requested tools
+        last_ai = None
+        for msg in reversed(state["messages"]):
+            if isinstance(msg, AIMessage):
+                last_ai = msg
+                break
+        include_tools = bool(last_ai and getattr(last_ai, "tool_calls", None))
+
+        # 2) Start by deduping the buffered ToolMessage objects (keep only the newest of each kind)
+        buffer_copy = state["conversation_history"].copy()
+        filtered_buffer: List[BaseMessage] = []
+        seen_tool_kinds = set()
+
+        for msg in buffer_copy:
+            if isinstance(msg, ToolMessage):
+                try:
+                    payload = json.loads(msg.content)
+                    kind = payload.get("kind", "_generic_tool_")
+                except:
+                    kind = "_generic_tool_"
+
+                if include_tools:
+                    if kind not in seen_tool_kinds:
+                        filtered_buffer.append(msg)
+                        seen_tool_kinds.add(kind)
+                else:
+                    # If the last AI had no tool_calls, skip any old ToolMessage entirely
+                    continue
+            else:
+                # Always keep text (Human/AI) in the filtered buffer
+                filtered_buffer.append(msg)
+
+        # 3) Now merge in the brand-new turn from state["messages"], but:
+        #    • Always append the new HumanMessage/AIMessage (no dedupe on identical text).
+        #    • For new ToolMessage objects, only append if we haven't already added that kind.
+        merged: List[BaseMessage] = filtered_buffer.copy()
         for msg in state["messages"]:
             if isinstance(msg, (HumanMessage, AIMessage)):
-                # Avoid adding duplicate messages that are already in buffer
-                msg_content = getattr(msg, "content", "").strip()
-                if msg_content and not any(
-                    getattr(hist_msg, "content", "").strip() == msg_content 
-                    for hist_msg in all_messages
-                ):
-                    current_messages.append(msg)
-        
-        # Combine buffer history and current messages
-        all_messages.extend(current_messages)
-        
-        # Limit total context to reasonable size (last 20 messages for better context)
-        if len(all_messages) > 20:
-            all_messages = all_messages[-20:]
+                # ← Note: We NO LONGER check "if identical content already exists."
+                # We always append the new user/assistant message so Gemini sees it.
+                merged.append(msg)
 
-        # Filter out empty messages
-        filtered = [m for m in all_messages if getattr(m, "content", "").strip()]
-        
-        print(f"🔍 _prepare_messages_for_llm → sending {len(filtered)} messages to LLM")
-        for i, m in enumerate(filtered):
-            print(f"   [{i:2d}] {type(m).__name__}: {repr(m.content[:60])}...")
-        
-        return filtered
-    
+            elif isinstance(msg, ToolMessage):
+                if not include_tools:
+                    continue
+                try:
+                    payload = json.loads(msg.content)
+                    kind = payload.get("kind", "_generic_tool_")
+                except:
+                    kind = "_generic_tool_"
+
+                if kind not in seen_tool_kinds:
+                    merged.append(msg)
+                    seen_tool_kinds.add(kind)
+                # If the LLM is re-requesting a widget of the same kind, we skip it
+                # because we already have the fresh copy.
+
+        # 4) Trim to the last 20 messages
+        if len(merged) > 20:
+            merged = merged[-20:]
+
+        # 5) Drop any empty content
+        final_payload = [m for m in merged if getattr(m, "content", "").strip()]
+
+        print(f"🔍 _prepare_messages_for_llm → sending {len(final_payload)} messages to LLM")
+        for i, m in enumerate(final_payload):
+            snippet = m.content[:60]
+            ell = "…" if len(getattr(m, "content","")) > 60 else ""
+            print(f"   [{i:2d}] {type(m).__name__}: {repr(snippet+ell)}")
+        return final_payload
+
     def _create_system_message(self, state: AgentState) -> str:
         """Create a context-aware system message with tool usage history."""
         
@@ -277,7 +309,6 @@ class LangGraphOrchestrator:
             
         except Exception as e:
             return {"error": f"Failed to get conversation insights: {str(e)}"}
-
     
     async def _agent_node(self, state: AgentState) -> AgentState:
         """Main agent processing node with proper message handling"""
@@ -299,7 +330,7 @@ class LangGraphOrchestrator:
             print("➤ Payload being sent to Gemini:")
             for idx, m in enumerate(llm_messages):
                 content = getattr(m, "content", None)
-                print(f"  [{idx:2d}] ({type(m).__name__}): {repr(content)}  length={len(content or '')}")
+                print(f"  [{idx:2d}] ({type(m).__name__}): {repr(content[:100])}  length={len(content or '')}")
             
             # Call the LLM with tools
             response = await self.llm_with_tools.ainvoke(llm_messages)
@@ -360,51 +391,12 @@ class LangGraphOrchestrator:
             )
             state["messages"].append(error_tool_message)
             return state
-    
-    async def _process_tool_results(self, state: AgentState) -> AgentState:
-        """Process tool results and prepare final agent response"""
-        
-        messages = state["messages"]
-        if not messages:
-            return state
-        
-        # Check if any UI tools were used in the CURRENT interaction
-        ui_tool_used = False
-        tool_results = []
-        
-        # Only look at the most recent tool messages (last 3 messages)
-        recent_messages = messages[-3:] if len(messages) > 3 else messages
-        
-        for message in recent_messages:
-            if isinstance(message, ToolMessage):
-                try:
-                    content = json.loads(message.content)
-                    if content.get("kind") in ["buttons", "inputs", "file_card", "upload_button"]:
-                        ui_tool_used = True
-                        print(f"UI tool used in current cycle: {content.get('kind')}")
-                        break
-                except (json.JSONDecodeError, AttributeError):
-                    # Regular tool result
-                    if hasattr(message, 'content'):
-                        tool_results.append(message.content)
-        
-        # Store whether UI tool was used for decision making
-        state["context"]["ui_tool_used"] = ui_tool_used
-        
-        # If no UI tool was used and we have tool results, prepare a response
-        if not ui_tool_used and tool_results:
-            # Create a summarizing message for the agent to respond with
-            tool_summary = ". ".join(tool_results)
-            summary_message = AIMessage(
-                content=f"Based on the calculation: {tool_summary}"
-            )
-            state["messages"].append(summary_message)
-            print(f"Added summary message: {summary_message.content}")
-        
-        return state
 
     def _should_continue(self, state: AgentState) -> str:
-        """Determine if we should continue to tools or end"""
+        """
+        Determine if we should continue to tools or end.
+        Enhanced to be more explicit about tool usage decisions.
+        """
         
         messages = state["messages"]
         if not messages:
@@ -414,144 +406,126 @@ class LangGraphOrchestrator:
         
         # Check if the last message has tool calls
         if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+            print(f"🔧 Agent requested {len(last_message.tool_calls)} tool(s), continuing to tools")
             return "tools"
         
+        print(f"💬 Agent provided text response, ending workflow")
         return "end"
     
-    def _after_tool_processing(self, state: AgentState) -> str:
-        """Decide what to do after tool processing"""
+    def _extract_final_response_from_messages(self, messages: List[BaseMessage]) -> Dict[str, Any]:
+        """
+        Simplified version: Always use the most recent message content
+        """
         
-        # Check if a UI tool was used in the current cycle
-        if state["context"].get("ui_tool_used", False):
-            print("Ending after UI tool usage")
-            return "end"
+        if not messages:
+            return {"kind": "text", "text": "Task completed."}
         
-        # For regular tools (like math), always end after processing
-        print("Ending after regular tool processing")
-        return "end"
-    
-    async def _finalize_response(self, state: AgentState) -> AgentState:
-        """Finalize the response - only use UI tools from current workflow cycle"""
-        
-        messages = state["messages"]
-        
-        # Only look for UI tool responses from the CURRENT workflow cycle
-        current_cycle_ui_response = None
-        
-        # Look for UI tool responses, but only from recent messages (last 3-5 messages)
-        recent_messages = messages[-5:] if len(messages) > 5 else messages
-        
-        for message in reversed(recent_messages):
-            if isinstance(message, ToolMessage):
+        # Start from the most recent message and work backwards
+        for message in reversed(messages):
+            
+            # Check for tool messages (highest priority)
+            if isinstance(message, ToolMessage) and message.content.strip():
                 try:
+                    # Try parsing as JSON for UI tools
                     content = json.loads(message.content)
                     if content.get("kind") in ["buttons", "inputs", "file_card", "upload_button"]:
-                        current_cycle_ui_response = content
-                        print(f"Found recent UI tool response: {content.get('kind')}")
-                        break
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-        
-        # Only use UI response if it's from the current cycle AND we actually called a tool
-        last_ai_message = None
-        for message in reversed(messages):
-            if isinstance(message, AIMessage):
-                last_ai_message = message
-                break
-        
-        use_ui_response = (
-            current_cycle_ui_response and 
-            last_ai_message and 
-            hasattr(last_ai_message, 'tool_calls') and 
-            last_ai_message.tool_calls and
-            not state["context"].get("force_text_response", False)
-        )
-        
-        if use_ui_response:
-            state["context"]["final_response"] = current_cycle_ui_response
-            state["workflow_status"] = WorkflowStatus.COMPLETED
-            print(f"Using UI response: {current_cycle_ui_response.get('kind')}")
-            return state
-        
-        # Otherwise, use the last AI message as text response
-        if messages:
-            # Look for the last AI message with actual content
-            for message in reversed(messages):
-                if isinstance(message, AIMessage) and hasattr(message, 'content') and message.content.strip():
-                    final_response = {
+                        return content
+                except:
+                    pass
+                
+                # Return tool message as text (for calculations, etc.)
+                return {
+                    "kind": "text",
+                    "text": message.content
+                }
+            
+            # Check for AI messages without tool calls
+            elif isinstance(message, AIMessage) and message.content.strip():
+                # Skip AI messages that have tool calls (they're "thinking" messages)
+                if not (hasattr(message, 'tool_calls') and message.tool_calls):
+                    return {
                         "kind": "text",
                         "text": message.content
                     }
-                    print(f"Using text response: {message.content[:50]}...")
-                    break
-            else:
-                final_response = {
-                    "kind": "text",
-                    "text": "Task completed."
-                }
-        else:
-            final_response = {
-                "kind": "text",
-                "text": "I'm ready to help you."
-            }
         
+        return {"kind": "text", "text": "Task completed."}
+
+    async def _finalize_response(self, state: AgentState) -> AgentState:
+        """
+        Simplified finalization that combines tool result processing and response preparation.
+        """
+        
+        messages = state["messages"]
+        
+        # Extract the final response using single-pass logic
+        final_response = self._extract_final_response_from_messages(messages)
+        
+        # Store in state context
         state["context"]["final_response"] = final_response
         state["workflow_status"] = WorkflowStatus.COMPLETED
+        
+        print(f"Finalized response: {final_response.get('kind')} - {str(final_response)[:100]}...")
         
         return state
     
     async def _save_conversation_buffer(self, state: AgentState) -> AgentState:
-        """Save the conversation messages to buffer using the enhanced checkpointer"""
-        
+        """Save or update conversation buffer (deduping tool messages by kind)."""
+
         try:
             conversation_id = state["conversation_id"]
-            
-            # Collect all meaningful messages from the conversation
+
+            # 1) Start with the previous buffer from state
             buffer_messages = []
-            
-            # Add messages from history (already in buffer format)
-            buffer_messages.extend(state["conversation_history"])
-            
-            # Add new messages from current conversation, including tool messages
-            for msg in state["messages"]:
-                if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
-                    # Avoid duplicates
-                    msg_content = getattr(msg, "content", "").strip()
-                    
-                    # For tool messages, always include them as they provide important context
-                    if isinstance(msg, ToolMessage):
+            seen_tool_kinds = set()
+            for msg in state["conversation_history"]:
+                if isinstance(msg, ToolMessage):
+                    try:
+                        data = json.loads(msg.content)
+                        kind = data.get("kind", "_generic_tool_")
+                    except:
+                        kind = "_generic_tool_"
+                    # Keep only the last occurrence (so skip older if we've seen this kind)
+                    if kind not in seen_tool_kinds:
                         buffer_messages.append(msg)
-                    elif msg_content and not any(
-                        getattr(existing_msg, "content", "").strip() == msg_content 
-                        for existing_msg in buffer_messages
-                        if not isinstance(existing_msg, ToolMessage)
+                        seen_tool_kinds.add(kind)
+                else:
+                    buffer_messages.append(msg)
+
+            # 2) Now merge new messages from state["messages"]
+            for msg in state["messages"]:
+                if isinstance(msg, ToolMessage):
+                    try:
+                        data = json.loads(msg.content)
+                        kind = data.get("kind", "_generic_tool_")
+                    except:
+                        kind = "_generic_tool_"
+                    if kind not in seen_tool_kinds:
+                        buffer_messages.append(msg)
+                        seen_tool_kinds.add(kind)
+                else:
+                    content = getattr(msg, "content", "").strip()
+                    if content and not any(
+                        getattr(existing, "content", "").strip() == content
+                        for existing in buffer_messages
+                        if not isinstance(existing, ToolMessage)
                     ):
                         buffer_messages.append(msg)
-            
-            # Trim buffer to reasonable size (keep last 50 messages)
+
+            # 3) Trim to the last 50 messages
             if len(buffer_messages) > 50:
                 buffer_messages = buffer_messages[-50:]
-            
-            # Save to buffer with enhanced analytics
+
+            # 4) Persist to Supabase
             success = self.checkpointer.save_buffer(conversation_id, buffer_messages)
-            
             if success:
                 print(f"✅ Successfully saved {len(buffer_messages)} messages to buffer")
-                
-                # Log buffer analytics for debugging
-                context_summary = self.checkpointer.get_buffer_context_summary(conversation_id)
-                if context_summary:
-                    quality = context_summary.get("context_quality", {})
-                    print(f"Buffer quality score: {quality.get('score', 0)}/100 - {quality.get('recommendation', 'N/A')}")
+                state["conversation_history"] = buffer_messages
             else:
-                print("❌ Failed to save messages to buffer")
-            
-            # Update state with final buffer
-            state["conversation_history"] = buffer_messages
-            
+                print("❌ Failed to save buffer")
+
         except Exception as e:
             print(f"Error saving conversation buffer: {e}")
-        
+
         return state
 
     async def process_user_message(self, conversation_id: str, user_message: str, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -582,28 +556,9 @@ class LangGraphOrchestrator:
             # Get the final response
             final_response = final_state["context"].get("final_response")
             
-            # If no final response was set, extract from the last message
+            # If no final response was set, use fallback extraction
             if not final_response:
-                messages = final_state["messages"]
-                if messages:
-                    # Find the last AI message
-                    for message in reversed(messages):
-                        if isinstance(message, AIMessage) and hasattr(message, 'content') and message.content:
-                            final_response = {
-                                "kind": "text",
-                                "text": message.content
-                            }
-                            break
-                    else:
-                        final_response = {
-                            "kind": "text",
-                            "text": "I processed your request."
-                        }
-                else:
-                    final_response = {
-                        "kind": "text",
-                        "text": "I apologize, but I couldn't process your request."
-                    }
+                final_response = self._extract_final_response_from_messages(final_state["messages"])
             
             print(f"Final response: {final_response}")
 
