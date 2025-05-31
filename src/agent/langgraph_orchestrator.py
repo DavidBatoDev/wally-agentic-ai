@@ -28,31 +28,14 @@ class WorkflowStatus(Enum):
     CANCELLED = "cancelled"
 
 
-@dataclass
-class WorkflowStep:
-    id: str
-    name: str
-    description: str
-    status: WorkflowStatus = WorkflowStatus.PENDING
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    requires_confirmation: bool = False
-
-
 class AgentState(Dict):
-    """State for the LangGraph workflow"""
+    """Simplified state for the LangGraph workflow"""
     messages: Annotated[List[BaseMessage], add_messages]
     conversation_id: str
     user_id: str
-    current_step: Optional[str]
-    workflow_steps: List[WorkflowStep]
     workflow_status: WorkflowStatus
-    intermediate_results: Dict[str, Any]
-    user_confirmation_pending: bool
     context: Dict[str, Any]
     conversation_history: List[BaseMessage]
-    thoughts: Optional[str] = None 
-    conversation_context: Optional[str] = None
 
 
 class LangGraphOrchestrator:
@@ -160,9 +143,6 @@ class LangGraphOrchestrator:
                 state["context"]["buffer_analytics"] = analytics
             
             print(f"Loaded {len(buffer_messages)} messages from conversation buffer")
-            
-            # Clear any conversation context for fresh processing
-            state["conversation_context"] = None
             
         except Exception as e:
             print(f"Error loading conversation buffer: {e}")
@@ -574,7 +554,6 @@ class LangGraphOrchestrator:
         
         return state
 
-
     async def process_user_message(self, conversation_id: str, user_message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process a user message using the LangGraph workflow with buffer management
@@ -585,11 +564,7 @@ class LangGraphOrchestrator:
             messages=[HumanMessage(content=user_message)],
             conversation_id=conversation_id,
             user_id=context.get("user_id", ""),
-            current_step=None,
-            workflow_steps=[],
             workflow_status=WorkflowStatus.PENDING,
-            intermediate_results={},
-            user_confirmation_pending=False,
             context=context,
             conversation_history=[],
         )
