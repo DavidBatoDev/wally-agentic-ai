@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from src.agent.agent_tools import get_tools
 from src.db.db_client import SupabaseClient
+from src.db.checkpointer import supabase_checkpointer
 
 
 class WorkflowStatus(Enum):
@@ -56,12 +57,13 @@ class AgentState(Dict):
 
 class LangGraphOrchestrator:
     """
-    Enhanced orchestrator using LangGraph for multi-step workflow management with memory
+    Enhanced orchestrator using LangGraph for multi-step workflow management with Supabase buffer memory
     """
     
     def __init__(self, llm, tools: Optional[List[BaseTool]] = None, db_client: Optional[SupabaseClient] = None):
         self.llm = llm
         self.db_client = db_client
+        self.checkpointer = supabase_checkpointer
         
         # Get tools if not provided
         if tools is None:
@@ -87,17 +89,18 @@ class LangGraphOrchestrator:
         workflow = StateGraph(AgentState)
 
         # ── Nodes ──────────────────────────────────────────────
-        workflow.add_node("load_memory",          self._load_conversation_memory)
+        workflow.add_node("load_buffer",          self._load_conversation_buffer)
         workflow.add_node("agent",                self._agent_node)
         workflow.add_node("tools",                self._tool_node)
         workflow.add_node("process_tool_results", self._process_tool_results)
         workflow.add_node("finalize",             self._finalize_response)
+        workflow.add_node("save_buffer",          self._save_conversation_buffer)
 
         # ── Entry ──────────────────────────────────────────────
-        workflow.set_entry_point("load_memory")
+        workflow.set_entry_point("load_buffer")
 
         # ── Edges ──────────────────────────────────────────────
-        workflow.add_edge("load_memory", "agent")                 # memory → agent
+        workflow.add_edge("load_buffer", "agent")                 # buffer → agent
         workflow.add_edge("tools", "process_tool_results")        # tools  → results
 
         # agent decides: call tools or finish
@@ -115,113 +118,69 @@ class LangGraphOrchestrator:
             "process_tool_results",
             self._after_tool_processing,
             {
-                # keep "continue" if you later add looping logic
                 "end": "finalize",
             },
         )
 
-        workflow.add_edge("finalize", END)                        # finalize → END
+        workflow.add_edge("finalize", "save_buffer")              # finalize → save
+        workflow.add_edge("save_buffer", END)                     # save → END
 
         # ── Compile with in-memory checkpointing ───────────────
         return workflow.compile(checkpointer=self.memory)
 
-    async def _load_conversation_memory(self, state: AgentState) -> AgentState:
-        """Load recent conversation history from database"""
-        
-        if not self.db_client:
-            state["conversation_history"] = []
-            return state
-        
+    async def _load_conversation_buffer(self, state: AgentState) -> AgentState:
+        """Load conversation buffer from Supabase using the enhanced checkpointer"""
+
         try:
-            # Get last 10 messages from the conversation (excluding the current one)
-            recent_messages = self.db_client.get_conversation_messages(
-                conversation_id=state["conversation_id"],
-                limit=10
-            )
-
-            print(f"🔍 _load_conversation_memory → loading {len(recent_messages)} DB messages")
+            conversation_id = state["conversation_id"]
             
-            # Convert to LangChain message format and track conversation context
-            history_messages = []
-            conversation_context_parts = []
+            # Load buffer from Supabase
+            buffer_messages = self.checkpointer.load_buffer(conversation_id)
             
-            # Track the last assistant question to avoid repetition
-            last_assistant_question = None
-            pending_question = None
+            print(f"🔍 _load_conversation_buffer → loaded {len(buffer_messages)} messages from buffer")
             
-            for msg in recent_messages:
-                try:
-                    body_data = json.loads(msg["body"])
-                    
-                    if msg["kind"] == "text":
-                        content = body_data.get("text", str(body_data))
-                        
-                    elif msg["kind"] == "buttons":
-                        # This is an assistant question with buttons
-                        question = body_data.get("prompt", "question")
-                        last_assistant_question = question
-                        pending_question = question
-                        content = f"Asked: {question}"
-                        
-                    elif msg["kind"] == "action":
-                        # Handle user actions/button clicks
-                        action_data = body_data
-                        if action_data.get("action", "").startswith("button_"):
-                            button_value = action_data.get("values", {}).get("text", 
-                                action_data.get("values", {}).get("label", 
-                                    action_data.get("action", "").replace("button_", "")))
-                            content = f"Selected: {button_value}"
-                            # Clear pending question when answered
-                            pending_question = None
-                        else:
-                            content = f"Action: {action_data.get('action', 'unknown')}"
-                    elif msg["kind"] == "upload_button":
-                        content = f"Assistant provided an upload button with prompt {body_data.get("text", "please upload a button")}."
-
-                    if not content.strip():
-                        continue
-                    
-                    if msg["sender"] == "user":
-                        history_messages.append(HumanMessage(content=f"{content}"))
-                    elif msg["sender"] == "assistant":
-                        history_messages.append(AIMessage(content=f"{content}"))
-
-                except (json.JSONDecodeError, KeyError) as e:
-                    print(f"Error parsing message: {e}")
-                    continue
+            # Set the conversation history from buffer
+            state["conversation_history"] = buffer_messages
             
-            state["conversation_history"] = history_messages
-            
-            # Only set context if there's truly a pending question
-            if pending_question:
-                state["conversation_context"] = f"Waiting for response to: {pending_question}"
-            else:
-                state["conversation_context"] = None
+            # Get enhanced buffer info with tool usage analytics
+            buffer_info = self.checkpointer.get_buffer_info(conversation_id)
+            if buffer_info:
+                analytics = buffer_info.get('buffer_analytics', {})
+                print(f"Buffer info - Size: {buffer_info['buffer_size']}, Last updated: {buffer_info['updated_at']}")
                 
-            # Store last question to prevent repetition
-            state["last_assistant_question"] = last_assistant_question
+                # Log tool usage summary
+                tool_usage = analytics.get('tool_usage', {})
+                if tool_usage:
+                    print(f"Tool usage - Messages with tools: {tool_usage.get('messages_with_tools', 0)}, "
+                            f"Total tool calls: {tool_usage.get('tool_calls_count', 0)}")
+                    if tool_usage.get('tools_used'):
+                        print(f"Tools used in conversation: {list(tool_usage['tools_used'].keys())}")
+                
+                # Store analytics in state for reference
+                state["context"]["buffer_analytics"] = analytics
             
-            print(f"Loaded {len(history_messages)} messages from conversation history")
-            if state["conversation_context"]:
-                print(f"Conversation context: {state['conversation_context']}")
+            print(f"Loaded {len(buffer_messages)} messages from conversation buffer")
+            
+            # Clear any conversation context for fresh processing
+            state["conversation_context"] = None
             
         except Exception as e:
-            print(f"Error loading conversation memory: {e}")
+            print(f"Error loading conversation buffer: {e}")
             state["conversation_history"] = []
-        
+
         return state
 
     def _prepare_messages_for_llm(self, state: AgentState) -> List[BaseMessage]:
-        """Prepare messages for LLM including conversation history"""
+        """Prepare messages for LLM including conversation history from buffer"""
         
-        # Start with conversation history
+        # Start with conversation history from buffer
         all_messages = state["conversation_history"].copy()
 
         # Add current conversation messages (excluding tool messages and avoiding duplicates)
         current_messages = []
         for msg in state["messages"]:
             if isinstance(msg, (HumanMessage, AIMessage)):
-                # Avoid adding duplicate messages that are already in history
+                # Avoid adding duplicate messages that are already in buffer
                 msg_content = getattr(msg, "content", "").strip()
                 if msg_content and not any(
                     getattr(hist_msg, "content", "").strip() == msg_content 
@@ -229,16 +188,15 @@ class LangGraphOrchestrator:
                 ):
                     current_messages.append(msg)
         
-        # Combine history and current messages
+        # Combine buffer history and current messages
         all_messages.extend(current_messages)
         
-        # Limit total context to reasonable size (last 15 messages)
-        if len(all_messages) > 15:
-            all_messages = all_messages[-15:]
+        # Limit total context to reasonable size (last 20 messages for better context)
+        if len(all_messages) > 20:
+            all_messages = all_messages[-20:]
 
         # Filter out empty messages
         filtered = [m for m in all_messages if getattr(m, "content", "").strip()]
-        # show messages that are empty
         
         print(f"🔍 _prepare_messages_for_llm → sending {len(filtered)} messages to LLM")
         for i, m in enumerate(filtered):
@@ -247,7 +205,8 @@ class LangGraphOrchestrator:
         return filtered
     
     def _create_system_message(self, state: AgentState) -> str:
-        """Create a context-aware system message"""
+        """Create a context-aware system message with tool usage history."""
+        
         base_prompt = (
             "You are a helpful assistant specialized in editing, formatting, and translating documents. "
             "Always use tools to assist with tasks like buttons for asking for options for follow up questions, upload buttons for file uploads, and calculation for solving maths. "
@@ -259,13 +218,92 @@ class LangGraphOrchestrator:
             "Focus on clarity, precision, and professionalism in all responses."
         )
         
+        # Enhance with conversation context if available
+        conversation_id = state["conversation_id"]
+        context_summary = self.checkpointer.get_buffer_context_summary(conversation_id)
+        
+        if context_summary:
+            tool_usage = context_summary.get("tool_usage_summary", {})
+            recent_context = context_summary.get("recent_context", {})
+            
+            # Add context about recent tool usage
+            if tool_usage.get("tools_used"):
+                tools_used = ", ".join(tool_usage["tools_used"].keys())
+                base_prompt += f"\n\nContext: In this conversation, you have used these tools: {tools_used}. "
+                
+                # Add specific context based on tools used
+                if "show_buttons" in tool_usage["tools_used"]:
+                    base_prompt += "You've presented options to the user before. "
+                if "calculate" in tool_usage["tools_used"] or "multiply_numbers" in tool_usage["tools_used"]:
+                    base_prompt += "You've performed calculations in this conversation. "
+                if "show_upload_button" in tool_usage["tools_used"]:
+                    base_prompt += "You've provided file upload functionality. "
+            
+            # Add recent conversation flow context
+            if recent_context.get("last_tool_used"):
+                last_tool = recent_context["last_tool_used"]
+                base_prompt += f"The most recent tool used was '{last_tool['name']}' with kind '{last_tool['kind']}'. "
+                
+                # Avoid repeating the same tool unnecessarily
+                if last_tool["name"] in ["show_buttons", "show_upload_button"]:
+                    base_prompt += "Avoid immediately using the same UI tool unless specifically requested. "
+            
+            # Add quality assessment
+            quality = context_summary.get("context_quality", {})
+            if quality.get("recommendation"):
+                base_prompt += f"Conversation quality: {quality['recommendation']}. "
+        
         return base_prompt
+    
+    def get_conversation_insights(self, conversation_id: str) -> Dict[str, Any]:
+        """
+        Get insights about the conversation including tool usage patterns.
+        """
+        try:
+            context_summary = self.checkpointer.get_buffer_context_summary(conversation_id)
+            if not context_summary:
+                return {"error": "No conversation data found"}
+            
+            tool_usage = context_summary.get("tool_usage_summary", {})
+            recent_context = context_summary.get("recent_context", {})
+            quality = context_summary.get("context_quality", {})
+            
+            insights = {
+                "conversation_health": {
+                    "quality_score": quality.get("score", 0),
+                    "recommendation": quality.get("recommendation", "Unknown"),
+                    "factors": quality.get("factors", [])
+                },
+                "tool_usage_patterns": {
+                    "total_tool_calls": tool_usage.get("tool_calls_count", 0),
+                    "messages_with_tools": tool_usage.get("messages_with_tools", 0),
+                    "tools_breakdown": tool_usage.get("tools_used", {}),
+                    "ui_tools_used": tool_usage.get("ui_tools_used", 0),
+                    "calculation_tools_used": tool_usage.get("calculation_tools_used", 0)
+                },
+                "conversation_flow": {
+                    "last_user_input": recent_context.get("last_user_message", "No recent input"),
+                    "last_assistant_response": recent_context.get("last_assistant_message", "No recent response"),
+                    "last_tool_interaction": recent_context.get("last_tool_used", "No recent tool use")
+                },
+                "buffer_info": {
+                    "total_messages": context_summary.get("buffer_size", 0),
+                    "message_distribution": context_summary.get("message_distribution", {}),
+                    "last_updated": context_summary.get("updated_at", "Unknown")
+                }
+            }
+            
+            return insights
+            
+        except Exception as e:
+            return {"error": f"Failed to get conversation insights: {str(e)}"}
+
     
     async def _agent_node(self, state: AgentState) -> AgentState:
         """Main agent processing node with proper message handling"""
         
         try:
-            # Prepare messages for LLM (includes history + current conversation)
+            # Prepare messages for LLM (includes buffer history + current conversation)
             llm_messages = [
                 SystemMessage(content=self._create_system_message(state)),
                 *self._prepare_messages_for_llm(state),
@@ -286,10 +324,8 @@ class LangGraphOrchestrator:
             # Call the LLM with tools
             response = await self.llm_with_tools.ainvoke(llm_messages)
 
-            # DEBUG: Print the last message before invoking LLM
             print("🧠  _agent_node – LLM replied:", response.content[:120] if hasattr(response, "content") else response)
 
-            # DEBUG: Print the response from LLM
             if getattr(response, "tool_calls", None):
                 for call in response.tool_calls:
                     print("   ↳ tool requested:", call["name"], call["args"])
@@ -320,7 +356,6 @@ class LangGraphOrchestrator:
                 
             last_message = messages[-1]
 
-            # DEBUG: Print the last message before executing tools
             for call in last_message.tool_calls:
                 print(f"🔧  calling {call['name']} with", call['args'])
 
@@ -388,7 +423,6 @@ class LangGraphOrchestrator:
         
         return state
 
-
     def _should_continue(self, state: AgentState) -> str:
         """Determine if we should continue to tools or end"""
         
@@ -422,11 +456,9 @@ class LangGraphOrchestrator:
         messages = state["messages"]
         
         # Only look for UI tool responses from the CURRENT workflow cycle
-        # We need to be more selective about which tool messages to use
         current_cycle_ui_response = None
         
         # Look for UI tool responses, but only from recent messages (last 3-5 messages)
-        # This prevents using stale UI responses from previous interactions
         recent_messages = messages[-5:] if len(messages) > 5 else messages
         
         for message in reversed(recent_messages):
@@ -434,8 +466,6 @@ class LangGraphOrchestrator:
                 try:
                     content = json.loads(message.content)
                     if content.get("kind") in ["buttons", "inputs", "file_card", "upload_button"]:
-                        # Check if this tool response is from the current interaction
-                        # by verifying it came after the last user message
                         current_cycle_ui_response = content
                         print(f"Found recent UI tool response: {content.get('kind')}")
                         break
@@ -443,17 +473,12 @@ class LangGraphOrchestrator:
                     continue
         
         # Only use UI response if it's from the current cycle AND we actually called a tool
-        # Check if the last AI message has tool calls to confirm we intended to use a tool
         last_ai_message = None
         for message in reversed(messages):
             if isinstance(message, AIMessage):
                 last_ai_message = message
                 break
         
-        # Use UI response only if:
-        # 1. We found a recent UI response
-        # 2. The last AI message had tool calls (indicating we intended to use tools)
-        # 3. We haven't explicitly marked this as a text-only response
         use_ui_response = (
             current_cycle_ui_response and 
             last_ai_message and 
@@ -495,9 +520,64 @@ class LangGraphOrchestrator:
         
         return state
     
+    async def _save_conversation_buffer(self, state: AgentState) -> AgentState:
+        """Save the conversation messages to buffer using the enhanced checkpointer"""
+        
+        try:
+            conversation_id = state["conversation_id"]
+            
+            # Collect all meaningful messages from the conversation
+            buffer_messages = []
+            
+            # Add messages from history (already in buffer format)
+            buffer_messages.extend(state["conversation_history"])
+            
+            # Add new messages from current conversation, including tool messages
+            for msg in state["messages"]:
+                if isinstance(msg, (HumanMessage, AIMessage, ToolMessage)):
+                    # Avoid duplicates
+                    msg_content = getattr(msg, "content", "").strip()
+                    
+                    # For tool messages, always include them as they provide important context
+                    if isinstance(msg, ToolMessage):
+                        buffer_messages.append(msg)
+                    elif msg_content and not any(
+                        getattr(existing_msg, "content", "").strip() == msg_content 
+                        for existing_msg in buffer_messages
+                        if not isinstance(existing_msg, ToolMessage)
+                    ):
+                        buffer_messages.append(msg)
+            
+            # Trim buffer to reasonable size (keep last 50 messages)
+            if len(buffer_messages) > 50:
+                buffer_messages = buffer_messages[-50:]
+            
+            # Save to buffer with enhanced analytics
+            success = self.checkpointer.save_buffer(conversation_id, buffer_messages)
+            
+            if success:
+                print(f"✅ Successfully saved {len(buffer_messages)} messages to buffer")
+                
+                # Log buffer analytics for debugging
+                context_summary = self.checkpointer.get_buffer_context_summary(conversation_id)
+                if context_summary:
+                    quality = context_summary.get("context_quality", {})
+                    print(f"Buffer quality score: {quality.get('score', 0)}/100 - {quality.get('recommendation', 'N/A')}")
+            else:
+                print("❌ Failed to save messages to buffer")
+            
+            # Update state with final buffer
+            state["conversation_history"] = buffer_messages
+            
+        except Exception as e:
+            print(f"Error saving conversation buffer: {e}")
+        
+        return state
+
+
     async def process_user_message(self, conversation_id: str, user_message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process a user message using the LangGraph workflow
+        Process a user message using the LangGraph workflow with buffer management
         """
         
         # Create initial state
@@ -552,7 +632,7 @@ class LangGraphOrchestrator:
             
             print(f"Final response: {final_response}")
 
-            # Store the assistant message
+            # Store the assistant message in database
             assistant_message = self.db_client.create_message(
                 conversation_id=conversation_id,
                 sender="assistant",
@@ -741,3 +821,33 @@ class LangGraphOrchestrator:
                 "workflow_status": WorkflowStatus.FAILED.value,
                 "steps_completed": 0
             }
+    
+    def clear_conversation_buffer(self, conversation_id: str) -> bool:
+        """
+        Clear the conversation buffer for a specific conversation
+        """
+        try:
+            return self.checkpointer.clear_buffer(conversation_id)
+        except Exception as e:
+            print(f"Error clearing conversation buffer: {e}")
+            return False
+    
+    def get_buffer_info(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get buffer information for a conversation
+        """
+        try:
+            return self.checkpointer.get_buffer_info(conversation_id)
+        except Exception as e:
+            print(f"Error getting buffer info: {e}")
+            return None
+    
+    def trim_conversation_buffer(self, conversation_id: str, max_size: int = 30) -> bool:
+        """
+        Trim the conversation buffer to a maximum size
+        """
+        try:
+            return self.checkpointer.trim_buffer(conversation_id, max_size)
+        except Exception as e:
+            print(f"Error trimming conversation buffer: {e}")
+            return False
