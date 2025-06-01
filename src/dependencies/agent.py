@@ -27,7 +27,6 @@ def get_langgraph_orchestrator() -> LangGraphOrchestrator:
         model="gemini-2.0-flash-exp",
         google_api_key=settings.GEMINI_API_KEY,
         temperature=settings.DEFAULT_AGENT_TEMPERATURE,
-        streaming=True
     )
     
     # Set up the LangGraph orchestrator
