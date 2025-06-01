@@ -10,7 +10,7 @@ from langchain.schema.messages import BaseMessage
 
 def load_agent_state(db_client: SupabaseClient, conversation_id: str) -> Optional[AgentState]:
     """
-    Fetch the AgentState JSON from Supabase, convert it back to an AgentState dataclass.
+    Fetch the AgentState JSON from Supabase, convert it back to an AgentState Pydantic model.
     If no row exists, return None.
     """
     try:
@@ -36,12 +36,21 @@ def load_agent_state(db_client: SupabaseClient, conversation_id: str) -> Optiona
 
 def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: AgentState) -> bool:
     """
-    Serialize AgentState into a JSON-ready dict, then insert/update Supabase.
+    Serialize AgentState Pydantic model into a JSON-ready dict, then insert/update Supabase.
     Returns True on success.
     """
     try:
+        # Use Pydantic's model_dump for serialization
         state_data: Dict[str, Any] = _agent_state_to_checkpoint_data(state)
-        status = state.workflow_status.value if isinstance(state.workflow_status, WorkflowStatus) else state.workflow_status
+        
+        # Handle workflow_status safely - it might already be a string due to use_enum_values
+        if isinstance(state.workflow_status, WorkflowStatus):
+            status = state.workflow_status.value
+        elif isinstance(state.workflow_status, str):
+            status = state.workflow_status
+        else:
+            status = str(state.workflow_status)
+            
         steps_done = state.steps_done
 
         existing = (
@@ -89,10 +98,10 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
 
 def _agent_state_to_checkpoint_data(state: AgentState) -> Dict[str, Any]:
     """
-    Convert AgentState dataclass into a JSON-serializable dict.
+    Convert AgentState Pydantic model into a JSON-serializable dict.
     """
-    serialized_messages = []
-    for msg in state.messages:
+    # Helper function to serialize messages
+    def serialize_message(msg: BaseMessage) -> Dict[str, Any]:
         base = {"type": msg.__class__.__name__, "content": msg.content}
         if hasattr(msg, "tool_calls") and getattr(msg, "tool_calls", None):
             base["tool_calls"] = msg.tool_calls
@@ -100,44 +109,29 @@ def _agent_state_to_checkpoint_data(state: AgentState) -> Dict[str, Any]:
             base["tool_call_id"] = msg.tool_call_id
         if hasattr(msg, "name"):
             base["name"] = msg.name
-        serialized_messages.append(base)
+        return base
 
-    serialized_history = []
-    for msg in state.conversation_history:
-        base = {"type": msg.__class__.__name__, "content": msg.content}
-        if hasattr(msg, "tool_calls") and getattr(msg, "tool_calls", None):
-            base["tool_calls"] = msg.tool_calls
-        if hasattr(msg, "tool_call_id"):
-            base["tool_call_id"] = msg.tool_call_id
-        if hasattr(msg, "name"):
-            base["name"] = msg.name
-        serialized_history.append(base)
-
-    return {
-        "messages": serialized_messages,
-        "conversation_history": serialized_history,
-        "conversation_id": state.conversation_id,
-        "user_id": state.user_id,
-        "workflow_status": state.workflow_status.value if isinstance(state.workflow_status, WorkflowStatus) else state.workflow_status,
-        "context": state.context,
-        "user_upload_id": state.user_upload_id,
-        "user_upload": state.user_upload,
-        "extracted_required_fields": state.extracted_required_fields,
-        "filled_required_fields": state.filled_required_fields,
-        "translated_required_fields": state.translated_required_fields,
-        "missing_required_fields": state.missing_required_fields,
-        "translate_from": state.translate_from,
-        "translate_to": state.translate_to,
-        "template_id": state.template_id,
-        "template_required_fields": state.template_required_fields,
-        "document_version_id": state.document_version_id,
-        "steps_done": state.steps_done,
-    }
+    # Get the model data as a dict
+    data = state.model_dump()
+    
+    # Manually serialize the message objects since they're not JSON serializable
+    data["messages"] = [serialize_message(msg) for msg in state.messages]
+    data["conversation_history"] = [serialize_message(msg) for msg in state.conversation_history]
+    
+    # Ensure workflow_status is serialized as string value
+    if isinstance(state.workflow_status, WorkflowStatus):
+        data["workflow_status"] = state.workflow_status.value
+    elif isinstance(state.workflow_status, str):
+        data["workflow_status"] = state.workflow_status
+    else:
+        data["workflow_status"] = str(state.workflow_status)
+    
+    return data
 
 
 def _checkpoint_data_to_agent_state(data: Dict[str, Any]) -> AgentState:
     """
-    Convert a JSON-serializable dict (or LangGraph’s AddableValuesDict) back into an AgentState.
+    Convert a JSON-serializable dict (or LangGraph's AddableValuesDict) back into an AgentState.
     This helper will accept either plain dicts or real BaseMessage instances in data["messages"].
     """
     def _ensure_message(obj) -> BaseMessage:
@@ -172,27 +166,23 @@ def _checkpoint_data_to_agent_state(data: Dict[str, Any]) -> AgentState:
     conversation_history = [_ensure_message(x) for x in data.get("conversation_history", [])]
 
     # Reconstruct workflow status (string → WorkflowStatus enum)
-    wf_status = data.get("workflow_status", "pending")
-    if isinstance(wf_status, str):
-        wf_status = WorkflowStatus(wf_status)
+    wf_status_raw = data.get("workflow_status", "pending")
+    if isinstance(wf_status_raw, WorkflowStatus):
+        wf_status = wf_status_raw
+    elif isinstance(wf_status_raw, str):
+        try:
+            wf_status = WorkflowStatus(wf_status_raw)
+        except ValueError:
+            # Fallback to PENDING if invalid value
+            wf_status = WorkflowStatus.PENDING
+    else:
+        wf_status = WorkflowStatus.PENDING
 
-    return AgentState(
-        messages=messages,
-        conversation_history=conversation_history,
-        conversation_id=data.get("conversation_id", ""),
-        user_id=data.get("user_id", ""),
-        workflow_status=wf_status,
-        context=data.get("context", {}),
-        user_upload_id=data.get("user_upload_id", ""),
-        user_upload=data.get("user_upload", {}),
-        extracted_required_fields=data.get("extracted_required_fields", {}),
-        filled_required_fields=data.get("filled_required_fields", {}),
-        translated_required_fields=data.get("translated_required_fields", {}),
-        missing_required_fields=data.get("missing_required_fields", {}),
-        translate_from=data.get("translate_from", ""),
-        translate_to=data.get("translate_to", ""),
-        template_id=data.get("template_id", ""),
-        template_required_fields=data.get("template_required_fields", {}),
-        document_version_id=data.get("document_version_id", ""),
-        steps_done=data.get("steps_done", []),
-    )
+    # Create a copy of data for Pydantic model creation
+    model_data = data.copy()
+    model_data["messages"] = messages
+    model_data["conversation_history"] = conversation_history
+    model_data["workflow_status"] = wf_status
+
+    # Use Pydantic's model validation to create the AgentState
+    return AgentState(**model_data)

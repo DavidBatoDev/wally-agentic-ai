@@ -93,23 +93,6 @@ class ShowUploadButtonInput(BaseModel):
         default=None, 
         description="Additional context for the upload workflow"
     )
-
-# -----------------------------------------------------------------------------
-# Database interaction schemas
-# -----------------------------------------------------------------------------
-
-class SearchMemoryInput(BaseModel):
-    """Schema for searching conversation memory."""
-    query: str = Field(description="Search query text")
-    conversation_id: str = Field(description="Conversation ID to search within")
-    limit: int = Field(default=5, description="Maximum number of results")
-
-class StoreMemoryInput(BaseModel):
-    """Schema for storing information in memory."""
-    content: str = Field(description="Content to store")
-    conversation_id: str = Field(description="Conversation ID")
-    metadata: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata")
-
 # -----------------------------------------------------------------------------
 # Enhanced tool implementations
 # -----------------------------------------------------------------------------
