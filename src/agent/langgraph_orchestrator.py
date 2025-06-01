@@ -198,42 +198,68 @@ class LangGraphOrchestrator:
         return state
 
     async def _tool_node(self, state: AgentState) -> AgentState:
-        """
-        If the last LLM message included tool_calls, run those tools here.
-        Append the tool results back into state.messages.
-        """
+        """Run any requested tool(s) and keep the full chat history."""
         try:
             if "tools" not in state.steps_done:
                 state.steps_done.append("tools")
 
+            prior_messages = list(state.messages)          # snapshot history
+
             if not state.messages:
                 return state
-
-            last_message = state.messages[-1]
-            if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
+            last = state.messages[-1]
+            if not getattr(last, "tool_calls", None):
                 return state
 
-            for call in last_message.tool_calls:
-                print(f"🔧 Calling tool {call['name']} with args {call['args']}")
+            for call in last.tool_calls:
+                print(f"🔧 Calling {call['name']} with {call['args']}")
 
-            tool_response = await self.tool_node.ainvoke(state)
+            # ---------- run the tool ----------
+            raw_tool_resp = await self.tool_node.ainvoke(state)
             print("🔧  tool(s) finished")
 
-            return tool_response
+            # ---------- normalise -------------
+            if isinstance(raw_tool_resp, AgentState):
+                merged_state = raw_tool_resp
+            elif isinstance(raw_tool_resp, dict):
+                merged_state = _checkpoint_data_to_agent_state(raw_tool_resp)
+            else:                                   # AddableValuesDict etc.
+                merged_state = _checkpoint_data_to_agent_state(dict(raw_tool_resp))
+
+            # ---------- merge history ----------
+            merged_state.messages = prior_messages + (merged_state.messages or [])
+            return merged_state
 
         except Exception as e:
             print(f"[Error in _tool_node] {e}")
-            # If tool execution fails, we still want to append a ToolMessage so the graph can move on
+            err_msg = ToolMessage(
+                content=f"Tool execution failed: {e}",
+                tool_call_id="error"
+            )
+            state.messages = list(state.messages) + [err_msg]
+            return state
+
+        except Exception as e:
+            print(f"[Error in _tool_node] {e}")
+            # If tool execution fails, we still want to append a ToolMessage so the graph can move on.
+            # First, restore full history:
+            full_history = list(state.messages)
+
+            # Create an error ToolMessage:
+            last_msg = state.messages[-1] if state.messages else None
             err_tool_msg = ToolMessage(
                 content=f"Tool execution failed: {str(e)}",
                 tool_call_id=(
                     "error"
-                    if not hasattr(last_message, "tool_calls") or not last_message.tool_calls
-                    else last_message.tool_calls[0].get("id", "error")
+                    if not last_msg or not getattr(last_msg, "tool_calls", None)
+                    else last_msg.tool_calls[0].get("id", "error")
                 )
             )
-            state.messages.append(err_tool_msg)
+
+            # Append that single error msg onto our full history, then return new state:
+            state.messages = full_history + [err_tool_msg]
             return state
+
 
     def _should_continue(self, state: AgentState) -> str:
         """
