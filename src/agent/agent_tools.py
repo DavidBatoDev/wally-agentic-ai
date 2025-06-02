@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from langchain.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
@@ -72,23 +72,17 @@ class ShowUploadButtonInput(BaseModel):
     conversation_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
 
-class ShowFileCardInput(BaseModel):
-    file_id: str
-    title: str
-    summary: str
-    thumbnail: Optional[str] = None
-    status: str = "ready"
-    file_size: Optional[str] = None
-    file_type: Optional[str] = None
-    conversation_id: Optional[str] = None
-
 class AgentStatePatch(BaseModel):
     translate_from: Optional[str] = Field(None, description="The document language")
     translate_to: Optional[str] = Field(None, description="Target language")
-    user_upload_info: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Metadata about the user-uploaded file, plus info",
+    user_upload_info: Union[Dict[str, Any], str, None] = Field(
+        default=None,
+        description=(
+            "Metadata about the user-uploaded file. "
+            "Prefer a dict, but a plain string is tolerated and will be parsed."
+        ),
     )
+    upload_analysis: Dict[str, Any] = Field(default_factory=dict)
     user_upload_id: Optional[str] = Field(
         None,
         description="Supabase UUID of the user-uploaded file",
@@ -107,13 +101,16 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
     tools: List[BaseTool] = []
 
     # ------------------------------------------------------
-    # 1) A simple “multiply” tool
+    # 1) A simple "multiply" tool
     def multiply_numbers(a: float, b: float) -> str:
+        print(f"[TOOL] multiply_numbers called with arguments: a={a}, b={b}")
         try:
             result = a * b
+            print(f"[TOOL] multiply_numbers result: {result}")
             logger.debug("multiply_numbers %s × %s = %s", a, b, result)
             return f"The result of {a} × {b} is {result}"
         except Exception as exc:
+            print(f"[TOOL] multiply_numbers error: {exc}")
             raise ToolExecutionError(f"Multiplication failed: {exc}") from exc
 
     tools.append(
@@ -132,6 +129,8 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         Called by the LLM to store new workflow info.
         We also craft a friendly confirmation for the user.
         """
+        print(f"[TOOL] update_agent_state called with arguments: {patch_kwargs}")
+        
         bullet: List[str] = []
 
         if "translate_to" in patch_kwargs:
@@ -167,20 +166,11 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
 
         # 👉 teach the user what to do next
         if "user_upload_id" not in patch_kwargs:
-            bullet.append("📄 Please upload the document whenever you’re ready.")
+            bullet.append("📄 Please upload the document whenever you're ready.")
 
-        # Insert a “system” (or “model”) message directly into Supabase
-        # supabase_client.client.table("messages").insert({
-        #     "conversation_id": patch_kwargs.get("conversation_id", ""),
-        #     "sender": "model",
-        #     "kind": "text",
-        #     "body": json.dumps({
-        #         "text": " ".join(bullet),
-        #         "kind": "update_agent_state"
-        #     }),
-        # }).execute()
-
-        return " ".join(bullet)
+        result = " ".join(bullet)
+        print(f"[TOOL] update_agent_state result: {result}")
+        return result
 
     tools.append(
         StructuredTool.from_function(
@@ -203,6 +193,8 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
     ) -> str:
+        print(f"[TOOL] show_buttons called with arguments: prompt='{prompt}', buttons={buttons}, context={context}, conversation_id={conversation_id}")
+        
         logger.debug("show_buttons prompt=%s", prompt)
 
         formatted: List[Dict[str, str]] = []
@@ -240,7 +232,9 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         if conversation_id:
             payload["conversation_id"] = conversation_id
 
-        return json.dumps(payload)
+        result = json.dumps(payload)
+        print(f"[TOOL] show_buttons result: {result}")
+        return result
 
     tools.append(
         StructuredTool.from_function(
@@ -263,6 +257,8 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         conversation_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> str:
+        print(f"[TOOL] show_upload_button called with arguments: prompt='{prompt}', accepted_types={accepted_types}, max_size_mb={max_size_mb}, multiple={multiple}, upload_endpoint='{upload_endpoint}', conversation_id={conversation_id}, context={context}")
+        
         logger.debug("show_upload_button prompt=%s", prompt)
 
         if accepted_types is None:
@@ -290,7 +286,10 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         }
         if context:
             payload["context"] = context
-        return json.dumps(payload)
+        
+        result = json.dumps(payload)
+        print(f"[TOOL] show_upload_button result: {result}")
+        return result
 
     tools.append(
         StructuredTool.from_function(
@@ -298,46 +297,6 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
             name="show_upload_button",
             description="Render a file-upload widget.",
             args_schema=ShowUploadButtonInput,
-            return_direct=True,
-        )
-    )
-
-    # ------------------------------------------------------
-    # 5) show_file_card
-    def show_file_card(
-        file_id: str,
-        title: str,
-        summary: str,
-        thumbnail: Optional[str] = None,
-        status: str = "ready",
-        file_size: Optional[str] = None,
-        file_type: Optional[str] = None,
-        conversation_id: Optional[str] = None,
-    ) -> str:
-        payload: Dict[str, Any] = {
-            "kind": "file_card",
-            "file_id": file_id,
-            "title": title,
-            "summary": summary,
-            "status": status,
-        }
-        if thumbnail:
-            payload["thumbnail"] = thumbnail
-        if file_size:
-            payload["file_size"] = file_size
-        if file_type:
-            payload["file_type"] = file_type
-        if conversation_id:
-            payload["conversation_id"] = conversation_id
-
-        return json.dumps(payload)
-
-    tools.append(
-        StructuredTool.from_function(
-            func=show_file_card,
-            name="show_file_card",
-            description="Render a file preview card.",
-            args_schema=ShowFileCardInput,
             return_direct=True,
         )
     )

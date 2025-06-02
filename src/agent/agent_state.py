@@ -36,6 +36,7 @@ class AgentState(BaseModel):
     # File upload
     user_upload_id: str = ""
     user_upload_info: Dict[str, Any] = Field(default_factory=dict)
+    upload_analysis: Dict[str, Any] = Field(default_factory=dict)
 
     # Field tracking
     extracted_required_fields: Dict[str, Any] = Field(default_factory=dict)
