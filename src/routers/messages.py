@@ -142,65 +142,74 @@ async def handle_user_action(
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Handle button-clicks, form submissions, etc.
-
-    `handle_user_action` still expects the richer orchestrator return, so
-    no change is required here.
+    Handle button-clicks from show_buttons tool.
+    
+    This now works the same as /text route:
+    1. Store the button click as a text message
+    2. Process it through the normal orchestrator flow
+    3. Return lightweight status (assistant responses come via Realtime)
     """
     try:
-        _ = _guard_membership(str(action_message.conversation_id), current_user)
+        # ── membership / auth ---------------------------------------------------
+        convo = _guard_membership(str(action_message.conversation_id), current_user)
 
-        # store the action as a user message
-        user_action_msg = supabase_client.create_message(
+        # ── convert action to text message -------------------------------------
+        # Extract the button text/label to use as the message body
+        button_text = action_message.values.get("text", action_message.action)
+        
+        # ── persist as a text message ------------------------------------------
+        user_msg = supabase_client.create_message(
             conversation_id=str(action_message.conversation_id),
             sender="user",
-            kind="action",
-            body=json.dumps(
-                {
-                    "action": action_message.action,
-                    "values": action_message.values,
-                    "source_message_id": (
-                        str(action_message.source_message_id)
-                        if action_message.source_message_id
-                        else None
-                    ),
-                }
-            ),
+            kind="text",
+            body=json.dumps({"text": button_text}),
         )
 
+        # ── run the LangGraph orchestrator -------------------------------------
         orchestrator = get_langgraph_orchestrator()
-        result = await orchestrator.handle_user_action(
+        ctx = {
+            "user_id": current_user.id,
+            "conversation_id": str(action_message.conversation_id),
+        }
+        result = await orchestrator.process_user_message(
             conversation_id=str(action_message.conversation_id),
-            action=action_message.action,
-            values=action_message.values,
+            user_message=button_text,
+            context=ctx,
         )
 
-        if "error" in result:
-            return {
-                "success": False,
-                "error": result["error"],
-                "response": result["response"],
-            }
-
+        # ── thin REST response --------------------------------------------------
         return {
             "success": True,
-            "user_action_message": user_action_msg,
-            "assistant_message": result["message"],
-            "response": result["response"],
+            "user_message": user_msg,
+            # orchestrator now returns a lightweight summary:
+            "inserted": result.get("inserted", 0),
             "workflow_status": result.get("workflow_status", "completed"),
+            "steps_completed": result.get("steps_completed", 1),
         }
 
     except HTTPException:
         raise
     except Exception as exc:
         print(f"Error handling user action: {exc}")
+        
         error_payload = {
             "kind": "text",
-            "text": "I'm sorry, I couldn't process your action at this time.",
+            "text": (
+                "I'm sorry, I encountered an error while processing your "
+                "action. Please try again."
+            ),
         }
+        err_msg = supabase_client.create_message(
+            conversation_id=str(action_message.conversation_id),
+            sender="assistant",
+            kind="text",
+            body=json.dumps(error_payload),
+        )
+
         return {
             "success": False,
             "error": str(exc),
+            "assistant_message": err_msg,
             "response": error_payload,
         }
 
