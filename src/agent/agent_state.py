@@ -14,6 +14,16 @@ class WorkflowStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class UploadAnalysis(BaseModel):
+    file_id: str
+    mime_type: str
+    doc_type: str
+    variation: str = "standard"
+    detected_language: str = "unknown"
+    confidence: float = 0.0
+    page_size: str | None = None
+    page_count: int | None = None
+
 
 class AgentState(BaseModel):
     """
@@ -36,7 +46,7 @@ class AgentState(BaseModel):
     # File upload
     user_upload_id: str = ""
     user_upload_public_url: str = ""
-    upload_analysis: Dict[str, Any] = Field(default_factory=dict)
+    upload_analysis: UploadAnalysis | None = None
 
     # Field tracking
     extracted_required_fields: Dict[str, Any] = Field(default_factory=dict)

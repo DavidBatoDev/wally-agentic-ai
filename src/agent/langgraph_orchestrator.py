@@ -24,8 +24,9 @@ from src.db.checkpointer import (
     load_agent_state,
     save_agent_state,
 )
-from src.db.db_client import SupabaseClient
+from src.db.db_client import SupabaseClient, supabase_client
 from src.agent.analyze_tools import get_analyze_tool
+from src.agent.agent_state import UploadAnalysis
 
 
 log = logging.getLogger(__name__)
@@ -51,11 +52,11 @@ class LangGraphOrchestrator:
 
         # Rename: use core_tools instead of tools
         self.core_tools: List[BaseTool] = tools or get_tools(db_client=db_client)
-        self.analyze_tool      = get_analyze_tool()           # StructuredTool
+        self.analyze_tool = get_analyze_tool(llm)  # Pass LLM to analyze tool
 
         # Bind core_tools to the LLM and wrap them in a ToolNode runner
         self.llm_with_core_tools = self.llm.bind_tools(self.core_tools)
-        self._analyze_runner   = ToolNode([self.analyze_tool])
+        self._analyze_runner = ToolNode([self.analyze_tool])
         self._core_tool_runner = ToolNode(self.core_tools)
 
         # Pre-compile the graph (no checkpointing at this layer)
@@ -132,8 +133,10 @@ class LangGraphOrchestrator:
         )
 
         ctx: List[str] = []
-        if state.user_upload_id and not state.template_id:
+        if state.user_upload_id and not state.upload_analysis:
             ctx.append("A file has been uploaded. Analyse its type, variation, and language.")
+        elif state.upload_analysis and not state.template_id:
+            ctx.append("Document analyzed. Find matching template based on analysis.")
         elif state.template_id and not state.filled_required_fields:
             ctx.append("Template identified. Extract required fields from the upload.")
         elif state.filled_required_fields and state.missing_required_fields:
@@ -153,6 +156,9 @@ class LangGraphOrchestrator:
 
         if state.translate_to:
             ctx.append(f"Target language: {state.translate_to}.")
+        if state.upload_analysis:
+            analysis = state.upload_analysis
+            ctx.append(f"Document analyzed: {analysis.get('doc_type', 'unknown')} ({analysis.get('variation', 'unknown')}) in {analysis.get('detected_language', 'unknown')}.")
         if state.template_required_fields:
             keys = list(state.template_required_fields)[:5]
             more = "..." if len(state.template_required_fields) > 5 else ""
@@ -173,7 +179,7 @@ class LangGraphOrchestrator:
 
         tool_hint = (
             "\n\nIf the user message gives you ANY new detail about the workflow "
-            "(language, template_id, document type, etc.) **call the tool "
+            "(translate_to, translate_from  etc.) **call the tool "
             "`update_agent_state`** with only the keys that changed. "
             "You can then ALSO call other tools like show_buttons or show_upload_button "
             "in the same response to provide the next UI interaction. "
@@ -251,42 +257,88 @@ class LangGraphOrchestrator:
     
     async def _analyze_doc_node(self, state: AgentState) -> AgentState:
         """
-        VERY simple stub:
-        • infers doc_type / variation / language from the uploaded file name & mime-type
-        • writes the result into state.upload_analysis
-        • tells the user what we found
+        Use the analyze_upload tool to analyze the uploaded document.
+        The tool returns analysis data directly which we store in state.upload_analysis.
         """
         if "analyze_doc" in state.steps_done:
             # Already done in a previous turn
             return state
 
+        # Insert a message that we're analyzing the document
+        analysis_msg = AIMessage(content="🔍 Analyzing the uploaded document to determine its type and language...")
+        state.messages.append(analysis_msg)
+        
+        # Create message in database too
+        self.db_client.create_message(
+            conversation_id=state.conversation_id,
+            sender="assistant",
+            kind="text",
+            body=json.dumps({
+                "text": "🔍 Analyzing the uploaded document to determine its type and language..."
+            }),
+        )
+
+        # Mark this step as done
         state.steps_done.append("analyze_doc")
 
-        analysis = {
-            "doc_type":         "guess_doc_type(stem)",
-            "variation":         "PSA",
-            "detected_language": "English",
-            "template_id_hint":  None,
-        }
-
-        # ------------------------------------------------------------------
-        # 3) Patch the state
-        state.upload_analysis = analysis
-
-        # ------------------------------------------------------------------
-        # 4) Let the user know
-        bullet = [
-            f"✅ File **PSA** received.",
-            f"• Detected document type: **{analysis['doc_type']}**",
-        ]
-        if analysis["variation"]:
-            bullet.append(f"• Variation / year: **{analysis['variation']}**")
-        if analysis["detected_language"] != "unknown":
-            bullet.append(f"• Language: **{analysis['detected_language']}**")
-
-        state.messages.append(
-            AIMessage(content="\n".join(bullet))
-        )
+        try:
+            # Use the analyze tool to get analysis
+            analysis_result = self.analyze_tool.invoke({
+                "file_id": state.user_upload_id,
+                "public_url": state.user_upload_public_url
+            })
+            
+            # Store the analysis in state
+            state.upload_analysis = UploadAnalysis(**analysis_result)
+            
+            # Create a user-friendly summary
+            doc_type = analysis_result.get("doc_type", "unknown")
+            variation = analysis_result.get("variation", "standard")
+            language = analysis_result.get("detected_language", "unknown")
+            confidence = analysis_result.get("confidence", 0.0)
+            
+            confidence_text = ""
+            if confidence > 0.8:
+                confidence_text = " (high confidence)"
+            elif confidence > 0.5:
+                confidence_text = " (medium confidence)"
+            elif confidence > 0.0:
+                confidence_text = " (low confidence)"
+            
+            summary_parts = [
+                f"✅ **Document Analysis Complete**",
+                f"• **Type**: {doc_type.replace('_', ' ').title()}",
+                f"• **Variation**: {variation.replace('_', ' ').title()}",
+                f"• **Language**: {language.replace('_', ' ').title()}{confidence_text}",
+            ]
+            
+            if analysis_result.get("page_count"):
+                summary_parts.append(f"• **Pages**: {analysis_result['page_count']}")
+            if analysis_result.get("page_size"):
+                summary_parts.append(f"• **Size**: {analysis_result['page_size']}")
+            
+            summary_msg = AIMessage(content="\n".join(summary_parts))
+            state.messages.append(summary_msg)
+            
+            # Also update the detected language in state if we found one
+            if language and language != "unknown" and not state.translate_from:
+                state.translate_from = language
+                
+        except Exception as e:
+            log.exception(f"Error analyzing document: {e}")
+            
+            # Store minimal analysis on error
+            state.upload_analysis = {
+                "file_id": state.user_upload_id,
+                "doc_type": "unknown",
+                "variation": "standard", 
+                "detected_language": "unknown",
+                "confidence": 0.0,
+                "error": str(e)
+            }
+            
+            error_msg = AIMessage(content="⚠️ Unable to fully analyze the document. Please verify the document type manually.")
+            state.messages.append(error_msg)
 
         return state
 
