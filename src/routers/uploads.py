@@ -10,7 +10,7 @@ import uuid
 import os
 import json
 
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, get_langgraph_orchestrator
 from ..models.user import User
 from ..db.db_client import supabase_client
 
@@ -31,8 +31,11 @@ class FileUploadResponse(BaseModel):
     file_id: str
     public_url: str
     message: Dict[str, Any]
+    response: Dict[str, Any]
     mime_type: str
     size_bytes: int
+    workflow_status: str
+    steps_completed: int
 
 def validate_file(file: UploadFile) -> None:
     """Validate uploaded file type and size."""
@@ -135,14 +138,45 @@ async def upload_file(
             kind="file",
             body=json.dumps(file_message_body)
         )
+
+        # Get orchestrator and process the file
+        orchestrator = get_langgraph_orchestrator()
+        
+        # Prepare context for the orchestrator
+        context = {
+            "user_id": current_user.id,
+            "conversation_id": str(conversation_id),
+            "source_action": "file_uploaded",
+        }
+        
+        # Prepare file info for the orchestrator
+        file_info = {
+            "file_id": file_record["id"],
+            "filename": file.filename,
+            "mime_type": file.content_type,
+            "size_bytes": actual_size,
+            "public_url": storage_response["public_url"],
+            "object_key": object_key,
+            "bucket": "user-uploads"
+        }
+        
+        # Process the file with the LangGraph orchestrator
+        agent_response = await orchestrator.process_user_file(
+            conversation_id=str(conversation_id),
+            file_info=file_info,
+            context=context,
+        )
         
         return FileUploadResponse(
             success=True,
             file_id=file_record["id"],
             public_url=storage_response["public_url"],
             message=message,
+            response=agent_response.get("response", {}),
             mime_type=file_record["mime_type"],
-            size_bytes=file_record["size_bytes"]
+            size_bytes=file_record["size_bytes"],
+            workflow_status=agent_response.get("workflow_status", "unknown"),
+            steps_completed=agent_response.get("steps_completed", 0)
         )
         
     except HTTPException:
