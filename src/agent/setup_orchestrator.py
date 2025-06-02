@@ -8,7 +8,7 @@ from langchain.schema.language_model import BaseLanguageModel
 from langchain.tools import BaseTool
 
 from src.agent.langgraph_orchestrator import LangGraphOrchestrator
-from src.agent.agent_tools import get_tools
+from agent.core_tools import get_tools
 from src.db.db_client import SupabaseClient
 from src.config import get_settings
 
