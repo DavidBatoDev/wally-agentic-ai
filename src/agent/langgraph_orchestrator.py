@@ -18,13 +18,16 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from src.agent.agent_state import AgentState, WorkflowStatus
-from src.agent.agent_tools import get_tools
+from agent.core_tools import get_tools
 from src.db.checkpointer import (
     _checkpoint_data_to_agent_state,
     load_agent_state,
     save_agent_state,
 )
 from src.db.db_client import SupabaseClient
+import re
+from urllib.parse import unquote
+
 
 log = logging.getLogger(__name__)
 
@@ -244,6 +247,47 @@ class LangGraphOrchestrator:
         seen_ids = {id(m) for m in prior}
         merged.messages = prior + [m for m in new_msgs if id(m) not in seen_ids]
         return merged
+    
+    async def _analyze_doc_node(self, state: AgentState) -> AgentState:
+        """
+        VERY simple stub:
+        • infers doc_type / variation / language from the uploaded file name & mime-type
+        • writes the result into state.upload_analysis
+        • tells the user what we found
+        """
+        if "analyze_doc" in state.steps_done:
+            # Already done in a previous turn
+            return state
+
+        state.steps_done.append("analyze_doc")
+
+        analysis = {
+            "doc_type":         " guess_doc_type(stem)",
+            "variation":         "PSA",
+            "detected_language": "English",
+            "template_id_hint":  None,
+        }
+
+        # ------------------------------------------------------------------
+        # 3) Patch the state
+        state.upload_analysis = analysis
+
+        # ------------------------------------------------------------------
+        # 4) Let the user know
+        bullet = [
+            f"✅ File **PSA** received.",
+            f"• Detected document type: **{analysis['doc_type']}**",
+        ]
+        if analysis["variation"]:
+            bullet.append(f"• Variation / year: **{analysis['variation']}**")
+        if analysis["detected_language"] != "unknown":
+            bullet.append(f"• Language: **{analysis['detected_language']}**")
+
+        state.messages.append(
+            AIMessage(content="\n".join(bullet))
+        )
+
+        return state
 
     async def _load_state_graph(self, state: AgentState) -> AgentState:
         db_state = load_agent_state(self.db_client, state.conversation_id)
@@ -279,9 +323,11 @@ class LangGraphOrchestrator:
         """
         if state.user_upload_id and "analyze_doc" not in state.steps_done:
             return "analyze_doc"
-
+        
         if state.messages and getattr(state.messages[-1], "tool_calls", None):
             return "tools"
+        
+
 
         return "save"
 
@@ -551,27 +597,73 @@ class LangGraphOrchestrator:
         """
         Apply the partial update coming from `update_agent_state` tool calls.
 
-        –  Only allow known keys.
-        –  Enforce correct types so we never poison the state.
+        • Ignore unknown keys so a mis-typed field never breaks the workflow.
+        • Accept `user_upload_info` as dict or free-text; coerce to dict when possible.
         """
         for key, val in patch.items():
             if not hasattr(state, key):
-                continue                                    # ignore unknown fields
-
-            print("applying state patc", key, val)        
-
-            # --- type guards ------------------------------------------------------
-            if key == "user_upload":
-                if isinstance(val, dict):                  # ✅ only accept dicts
-                    setattr(state, key, val)
-                    # keep convenience mirror value in sync
-                    state.user_upload_id = val.get("file_id", "")
-                else:
-                    log.warning("Ignored invalid user_upload patch (%s)", type(val))
+                # Silently skip anything not on AgentState
                 continue
 
+            # ─────────────────────────────── user_upload_info
+            if key == "user_upload_info":
+                info_dict: Dict[str, Any] = {}
+
+                if isinstance(val, dict):
+                    info_dict = val
+
+                elif isinstance(val, str):
+                    # Try to parse "k=v, k=v, …" patterns first
+                    for piece in val.split(","):
+                        if "=" not in piece:
+                            continue
+                        k, v = (p.strip() for p in piece.split("=", 1))
+                        k = k.lower()
+
+                        v = re.sub(r"^['\"]?file[_ ]?type['\"]?:\s*", "", v).strip(" '\"")
+
+                        match k:
+                            case "filename" | "file_name":
+                                info_dict["filename"] = v
+                            case "filetype" | "mime_type" | "mimetype":
+                                info_dict["mime_type"] = v
+                            case "filesize" | "size_bytes" | "size":
+                                num = re.sub(r"[^\d]", "", v)
+                                if num.isdigit():
+                                    info_dict["size_bytes"] = int(num)
+                            case "url" | "public_url":
+                                info_dict["public_url"] = unquote(v)
+                            case "file_id":
+                                info_dict["file_id"] = v
+
+                    # Second chance: handle things like "application/pdf, 2 810 447 bytes"
+                    if not info_dict:
+                        tokens = [t.strip() for t in val.split(",")]
+                        for t in tokens:
+                            if "/" in t and "mime_type" not in info_dict:
+                                info_dict["mime_type"] = t
+                            elif "byte" in t.lower():
+                                num = re.sub(r"[^\d]", "", t)
+                                if num.isdigit():
+                                    info_dict["size_bytes"] = int(num)
+
+                    if not info_dict:
+                        log.warning("Could not parse user_upload_info string: %s", val)
+                        continue  # give up – don’t poison state
+
+                else:
+                    log.warning("Ignored invalid user_upload_info patch (%s)", type(val))
+                    continue
+
+                # Persist the cleaned info & sync convenience mirror
+                state.user_upload_info = info_dict
+                state.user_upload_id = info_dict.get("file_id", state.user_upload_id)
+                continue  # done with this key
+
+            # ─────────────────────────────── simple type guard
             if key == "user_upload_id" and not isinstance(val, str):
                 log.warning("user_upload_id must be str – got %s", type(val))
                 continue
 
+            # Default behaviour: let Pydantic handle the assignment
             setattr(state, key, val)
