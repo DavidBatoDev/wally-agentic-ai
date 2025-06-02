@@ -25,8 +25,7 @@ from src.db.checkpointer import (
     save_agent_state,
 )
 from src.db.db_client import SupabaseClient
-import re
-from urllib.parse import unquote
+from src.agent.analyze_tools import get_analyze_tool
 
 
 log = logging.getLogger(__name__)
@@ -52,9 +51,11 @@ class LangGraphOrchestrator:
 
         # Rename: use core_tools instead of tools
         self.core_tools: List[BaseTool] = tools or get_tools(db_client=db_client)
+        self.analyze_tool      = get_analyze_tool()           # StructuredTool
 
         # Bind core_tools to the LLM and wrap them in a ToolNode runner
         self.llm_with_core_tools = self.llm.bind_tools(self.core_tools)
+        self._analyze_runner   = ToolNode([self.analyze_tool])
         self._core_tool_runner = ToolNode(self.core_tools)
 
         # Pre-compile the graph (no checkpointing at this layer)
@@ -262,7 +263,7 @@ class LangGraphOrchestrator:
         state.steps_done.append("analyze_doc")
 
         analysis = {
-            "doc_type":         " guess_doc_type(stem)",
+            "doc_type":         "guess_doc_type(stem)",
             "variation":         "PSA",
             "detected_language": "English",
             "template_id_hint":  None,
@@ -327,8 +328,6 @@ class LangGraphOrchestrator:
         if state.messages and getattr(state.messages[-1], "tool_calls", None):
             return "tools"
         
-
-
         return "save"
 
     def _extract_final_response(self, messages: List[BaseMessage]) -> Dict[str, Any]:
@@ -452,14 +451,18 @@ class LangGraphOrchestrator:
         if context:
             state.context.update(context)
         
-        # Add file info to context so tools can access it
+        # 5. Store file info directly in state
+        state.user_upload_id = file_info.get("file_id", "")
+        state.user_upload_public_url = file_info.get("public_url", "")
+        
+        # Also add file info to context for tools
         state.context.update({
             "uploaded_file": file_info,
             "file_id": file_info.get("file_id"),
             "public_url": file_info.get("public_url"),
         })
 
-        # 5. Run the state-graph
+        # 6. Run the state-graph
         raw = await self.graph.ainvoke(state, RunnableConfig())
         final: AgentState = (
             raw
@@ -467,15 +470,15 @@ class LangGraphOrchestrator:
             else _checkpoint_data_to_agent_state(dict(raw))
         )
 
-        # 6. Persist the final state to Supabase
+        # 7. Persist the final state to Supabase
         save_agent_state(self.db_client, conversation_id, final)
 
-        # 7. Figure out what "final_response" to send to the UI
+        # 8. Figure out what "final_response" to send to the UI
         final_resp = final.context.get("final_response") or self._extract_final_response(
             final.messages
         )
 
-        # 8. Insert that final payload into the messages table
+        # 9. Insert that final payload into the messages table
         assistant_msg = self.db_client.create_message(
             conversation_id=conversation_id,
             sender="assistant",
@@ -489,77 +492,6 @@ class LangGraphOrchestrator:
             "workflow_status": final.workflow_status.value,
             "steps_completed": len(final.steps_done),
         }
-
-    async def handle_user_action(
-        self, conversation_id: str, action: str, values: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Convert button clicks / uploads / form submissions into natural-language
-        messages so the main orchestrator can process them.
-        """
-        log.debug("handle_user_action action=%s values=%s", action, values)
-
-        try:
-            if action.startswith("button_") or action in {"yes", "no", "confirm", "cancel"}:
-                text = (
-                    values.get("label")
-                    or values.get("value")
-                    or values.get("text")
-                    or action.replace("button_", "").replace("_", " ").title()
-                )
-                msg = f"My answer is: {text}"
-                ctx = {
-                    "user_id": values.get("user_id", ""),
-                    "conversation_id": conversation_id,
-                    "source_action": action,
-                    "button_context": {
-                        "selected_text": text,
-                        "selected_action": action,
-                        "is_answer": True,
-                    },
-                }
-                return await self.process_user_message(conversation_id, msg, ctx)
-
-            if action == "file_uploaded":
-                info = values.get("file_info", {})
-                ctx = {
-                    "user_id": values.get("user_id", ""),
-                    "conversation_id": conversation_id,
-                    "source_action": action,
-                }
-                return await self.process_user_file(conversation_id, info, ctx)
-
-            if action == "form_submitted":
-                form_data = values.get("form_data", {})
-                parts = ", ".join(f"{k}: {v}" for k, v in form_data.items())
-                msg = f"I submitted the form with: {parts}"
-                ctx = {
-                    "user_id": values.get("user_id", ""),
-                    "conversation_id": conversation_id,
-                    "source_action": action,
-                    "form_data": form_data,
-                }
-                return await self.process_user_message(conversation_id, msg, ctx)
-
-            # Fallback
-            fallback = values.get("message", f"I selected: {action}")
-            return await self.process_user_message(conversation_id, fallback, values)
-
-        except Exception as exc:
-            log.exception("handle_user_action failed")
-            error = {"kind": "text", "text": f"I encountered an error: {exc}"}
-            assistant_msg = self.db_client.create_message(
-                conversation_id=conversation_id,
-                sender="assistant",
-                kind="text",
-                body=json.dumps(error),
-            )
-            return {
-                "message": assistant_msg,
-                "response": error,
-                "workflow_status": WorkflowStatus.FAILED.value,
-                "steps_completed": 0,
-            }
 
     def get_workflow_status(self, conversation_id: str) -> Optional[str]:
         state = load_agent_state(self.db_client, conversation_id)
@@ -596,73 +528,16 @@ class LangGraphOrchestrator:
     def _apply_state_patch(self, state: AgentState, patch: Dict[str, Any]) -> None:
         """
         Apply the partial update coming from `update_agent_state` tool calls.
-
-        • Ignore unknown keys so a mis-typed field never breaks the workflow.
-        • Accept `user_upload_info` as dict or free-text; coerce to dict when possible.
+        Simplified to handle only the explicit fields we want to support.
         """
         for key, val in patch.items():
             if not hasattr(state, key):
                 # Silently skip anything not on AgentState
                 continue
 
-            # ─────────────────────────────── user_upload_info
-            if key == "user_upload_info":
-                info_dict: Dict[str, Any] = {}
-
-                if isinstance(val, dict):
-                    info_dict = val
-
-                elif isinstance(val, str):
-                    # Try to parse "k=v, k=v, …" patterns first
-                    for piece in val.split(","):
-                        if "=" not in piece:
-                            continue
-                        k, v = (p.strip() for p in piece.split("=", 1))
-                        k = k.lower()
-
-                        v = re.sub(r"^['\"]?file[_ ]?type['\"]?:\s*", "", v).strip(" '\"")
-
-                        match k:
-                            case "filename" | "file_name":
-                                info_dict["filename"] = v
-                            case "filetype" | "mime_type" | "mimetype":
-                                info_dict["mime_type"] = v
-                            case "filesize" | "size_bytes" | "size":
-                                num = re.sub(r"[^\d]", "", v)
-                                if num.isdigit():
-                                    info_dict["size_bytes"] = int(num)
-                            case "url" | "public_url":
-                                info_dict["public_url"] = unquote(v)
-                            case "file_id":
-                                info_dict["file_id"] = v
-
-                    # Second chance: handle things like "application/pdf, 2 810 447 bytes"
-                    if not info_dict:
-                        tokens = [t.strip() for t in val.split(",")]
-                        for t in tokens:
-                            if "/" in t and "mime_type" not in info_dict:
-                                info_dict["mime_type"] = t
-                            elif "byte" in t.lower():
-                                num = re.sub(r"[^\d]", "", t)
-                                if num.isdigit():
-                                    info_dict["size_bytes"] = int(num)
-
-                    if not info_dict:
-                        log.warning("Could not parse user_upload_info string: %s", val)
-                        continue  # give up – don’t poison state
-
-                else:
-                    log.warning("Ignored invalid user_upload_info patch (%s)", type(val))
-                    continue
-
-                # Persist the cleaned info & sync convenience mirror
-                state.user_upload_info = info_dict
-                state.user_upload_id = info_dict.get("file_id", state.user_upload_id)
-                continue  # done with this key
-
-            # ─────────────────────────────── simple type guard
-            if key == "user_upload_id" and not isinstance(val, str):
-                log.warning("user_upload_id must be str – got %s", type(val))
+            # Simple type validation for key fields
+            if key in ("user_upload_id", "user_upload_public_url") and not isinstance(val, str):
+                log.warning("%s must be str – got %s", key, type(val))
                 continue
 
             # Default behaviour: let Pydantic handle the assignment
