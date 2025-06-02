@@ -1,6 +1,6 @@
 # backend/src/agent/agent_state.py
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from langchain.schema import BaseMessage
 from pydantic import BaseModel, Field
@@ -44,8 +44,8 @@ class AgentState(BaseModel):
     missing_required_fields: Dict[str, Any] = Field(default_factory=dict)
 
     # Template / translation
-    translate_from: str = ""
-    translate_to: str = ""
+    translate_from: Optional[str] = ""
+    translate_to: Optional[str] = ""
     template_id: str = ""
     template_required_fields: Dict[str, str] = Field(default_factory=dict)
 

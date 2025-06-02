@@ -25,7 +25,11 @@ def load_agent_state(db_client: SupabaseClient, conversation_id: str) -> Optiona
             return None
 
         record = result.data[0]
-        raw_data: Dict[str, Any] = record["state_data"]  # JSON‐serializable dict
+
+        # ---------- keep the ID that lives in the table ----------
+        raw_data: Dict[str, Any] = record["state_data"] or {}
+        raw_data["conversation_id"] = record["conversation_id"]
+        # ----------------------------------------------------------
 
         return _checkpoint_data_to_agent_state(raw_data)
 
@@ -40,6 +44,14 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
     Returns True on success.
     """
     try:
+        # ------------------------------------------------------------------
+        # Guarantee we have a valid UUID to use in the SQL WHERE clause.
+        # If the caller passed an empty string, pull it from `state`.
+        # ------------------------------------------------------------------
+        if not conversation_id:
+            conversation_id = state.conversation_id or ""
+        if not conversation_id:               # still empty → bail early
+            raise ValueError("conversation_id missing when saving AgentState")
         # Use Pydantic's model_dump for serialization
         state_data: Dict[str, Any] = _agent_state_to_checkpoint_data(state)
         
@@ -180,6 +192,7 @@ def _checkpoint_data_to_agent_state(data: Dict[str, Any]) -> AgentState:
 
     # Create a copy of data for Pydantic model creation
     model_data = data.copy()
+    model_data.setdefault("conversation_id", data.get("conversation_id", ""))
     model_data["messages"] = messages
     model_data["conversation_history"] = conversation_history
     model_data["workflow_status"] = wf_status
