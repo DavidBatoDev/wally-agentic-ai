@@ -1,3 +1,5 @@
+# backend/src/agent/agent_tools.py
+
 """
 Enhanced tools available to the LangGraph agent for performing various actions.
 """
@@ -83,13 +85,21 @@ class ShowFileCardInput(BaseModel):
 class AgentStatePatch(BaseModel):
     translate_from: Optional[str] = Field(None, description="The document language")
     translate_to: Optional[str] = Field(None, description="Target language")
-    template_id: Optional[str] = Field(None, description="Supabase UUID of template")
+    user_upload_info: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Metadata about the user-uploaded file, plus info",
+    )
+    user_upload_id: Optional[str] = Field(
+        None,
+        description="Supabase UUID of the user-uploaded file",
+    )
+    template_id: Optional[str] = Field(None, description="The template ID to use to find the template document for translation")
     workflow_status: Optional[str] = Field(
         None,
         description="pending, in_progress, waiting_confirmation, completed",
     )
-    conversation_id: Optional[str] = Field(None, description="Auto‐filled by orchestrator")
-    # …any other optional patch fields you need
+    conversation_id: Optional[str] = Field(None, description="Auto-filled by orchestrator")
+
 
 
 def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
@@ -115,7 +125,6 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         )
     )
 
-
     # ------------------------------------------------------
     # 2) update_agent_state (synchronous!)
     def update_agent_state(**patch_kwargs) -> str:
@@ -133,6 +142,20 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
             src = patch_kwargs["translate_from"]
             bullet.append(f"✔️ Source language noted as **{src}**.")
 
+        if "user_upload" in patch_kwargs:
+            upload = patch_kwargs["user_upload"]
+            if "name" in upload:
+                bullet.append(f"✔️ File **{upload['name']}** received.")
+            else:
+                bullet.append("✔️ File uploaded.")
+
+            if "size_bytes" in upload:
+                size_mb = upload["size_bytes"] / (1024 * 1024)
+                bullet.append(f"✔️ File size: {size_mb:.2f} MB.")
+
+            if "mime_type" in upload:
+                bullet.append(f"✔️ File type: {upload['mime_type']}.")
+
         if "template_id" in patch_kwargs:
             bullet.append("✔️ Template ID received and stored.")
 
@@ -146,15 +169,16 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         if "user_upload_id" not in patch_kwargs:
             bullet.append("📄 Please upload the document whenever you’re ready.")
 
-        supabase_client.client.table("messages").insert({
-            "conversation_id": patch_kwargs.get("conversation_id", ""),
-            "sender": "model",
-            "kind": "text",
-            "body": json.dumps({
-                "text": " ".join(bullet),
-                "kind": "update_agent_state"
-            }),
-        }).execute()
+        # Insert a “system” (or “model”) message directly into Supabase
+        # supabase_client.client.table("messages").insert({
+        #     "conversation_id": patch_kwargs.get("conversation_id", ""),
+        #     "sender": "model",
+        #     "kind": "text",
+        #     "body": json.dumps({
+        #         "text": " ".join(bullet),
+        #         "kind": "update_agent_state"
+        #     }),
+        # }).execute()
 
         return " ".join(bullet)
 
@@ -167,10 +191,9 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
                 "Only include keys that changed."
             ),
             args_schema=AgentStatePatch,
-            return_direct=True,
+            return_direct=False,
         )
     )
-
 
     # ------------------------------------------------------
     # 3) show_buttons
@@ -229,7 +252,6 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
         )
     )
 
-
     # ------------------------------------------------------
     # 4) show_upload_button
     def show_upload_button(
@@ -279,7 +301,6 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
             return_direct=True,
         )
     )
-
 
     # ------------------------------------------------------
     # 5) show_file_card

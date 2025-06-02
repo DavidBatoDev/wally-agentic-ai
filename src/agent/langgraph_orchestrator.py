@@ -1,3 +1,5 @@
+# backend/src/agent/langgraph_orchestrator.py
+
 from __future__ import annotations
 import json
 import logging
@@ -26,6 +28,7 @@ from src.db.db_client import SupabaseClient
 
 log = logging.getLogger(__name__)
 
+
 class LangGraphOrchestrator:
     """
     LangGraph orchestrator for a document-translation workflow with explicit
@@ -43,43 +46,78 @@ class LangGraphOrchestrator:
 
         self.llm = llm
         self.db_client = db_client
-        self.tools: List[BaseTool] = tools or get_tools(db_client=db_client)
 
-        # Bind tools to the LLM and wrap them in a ToolNode runner
-        self.llm_with_tools = self.llm.bind_tools(self.tools)
-        self._tool_runner = ToolNode(self.tools)
+        # Rename: use core_tools instead of tools
+        self.core_tools: List[BaseTool] = tools or get_tools(db_client=db_client)
+
+        # Bind core_tools to the LLM and wrap them in a ToolNode runner
+        self.llm_with_core_tools = self.llm.bind_tools(self.core_tools)
+        self._core_tool_runner = ToolNode(self.core_tools)
 
         # Pre-compile the graph (no checkpointing at this layer)
         self.graph = self._build_workflow_graph()
 
     def _build_workflow_graph(self) -> StateGraph:
+        """
+        Build the LangGraph for the document-translation workflow.
+
+        ✔  Implemented nodes            → active
+        🕐  Future nodes / placeholders → commented-out
+        """
         g = StateGraph(AgentState)
 
-        # nodes
+        # ── 1. Active nodes ────────────────────────────────────────────────
         g.add_node("load_state_graph", self._load_state_graph)
-        g.add_node("agent",             self._agent_node)
-        g.add_node("tools",             self._tool_node)
-        g.add_node("save_state_graph",  self._save_state_graph)
-        g.add_node("finalize",          self._finalize_response)
+        g.add_node("agent",            self._agent_node)
+        g.add_node("analyze_doc",      self._analyze_doc_node)
+        g.add_node("tools",            self._tool_node)
+        g.add_node("save_state_graph", self._save_state_graph)
+        g.add_node("finalize",         self._finalize_response)
 
-        # entry + linear edges
+        # ── 2. Place-holders (add real callables later) ───────────────────
+        # g.add_node("find_template",             self._find_template_node)          # 🕐
+        # g.add_node("extract_required_fields",   self._extract_required_fields_node) # 🕐
+        # g.add_node("ask_node",                  self._ask_node)                    # 🕐
+        # g.add_node("translate_required_fields", self._translate_required_fields_node) # 🕐
+        # g.add_node("fill_template",             self._fill_template_node)          # 🕐
+        # g.add_node("change_specific_field",     self._change_specific_field_node)  # 🕐
+        # g.add_node("manual_fill_template",      self._manual_fill_template_node)   # 🕐
+        # g.add_node("end_node",                  self._end_node)                    # 🕐
+
+        # ── 3. Linear backbone you can already run ────────────────────────
         g.set_entry_point("load_state_graph")
-        g.add_edge("load_state_graph",  "agent")
-        g.add_edge("tools",             "save_state_graph")
-        g.add_edge("save_state_graph",  "finalize")
-        g.add_edge("finalize",          END)
+        g.add_edge("load_state_graph", "agent")
 
-        # dynamic branch after `agent`
+        # First upload → analyse → save
+        g.add_edge("analyze_doc",      "save_state_graph")
+
+        # Generic tool-invocation → save
+        g.add_edge("tools",            "save_state_graph")
+
+        # Always persist then finalise
+        g.add_edge("save_state_graph", "finalize")
+        g.add_edge("finalize",         END)
+
+        # ── 4. Dynamic router after *every* agent turn ─────────────────────
         g.add_conditional_edges(
             "agent",
-            self._should_continue,  # returns "tools" or "save"
+            self._route_next,                # your smart router
             {
-                "tools": "tools",
-                "save": "save_state_graph",
+                "analyze_doc": "analyze_doc",
+                # "find_template":             "find_template",            # 🕐
+                # "extract_required_fields":   "extract_required_fields",  # 🕐
+                # "ask":                       "ask_node",                 # 🕐
+                # "translate":                 "translate_required_fields",# 🕐
+                # "fill_template":             "fill_template",            # 🕐
+                # "manual_fill":               "manual_fill_template",     # 🕐
+                # "change_field":              "change_specific_field",    # 🕐
+                # "end":                       "end_node",                 # 🕐
+                "tools":       "tools",
+                "save":        "save_state_graph",
             },
         )
-        return g.compile()
 
+        return g.compile()
 
     def _create_system_message(self, state: AgentState) -> str:
         """Return a dynamic system prompt describing the current workflow step."""
@@ -148,7 +186,6 @@ class LangGraphOrchestrator:
             + tool_hint
         )
 
-
     async def _agent_node(self, state: AgentState) -> AgentState:
         # Mark that _agent_node has run
         if "agent" not in state.steps_done:
@@ -159,10 +196,10 @@ class LangGraphOrchestrator:
         llm_messages: List[BaseMessage] = [sys_msg, *state.messages]
 
         # Invoke the LLM (which may emit one or more tool_calls)
-        response: AIMessage = await self.llm_with_tools.ainvoke(llm_messages)
+        response: AIMessage = await self.llm_with_core_tools.ainvoke(llm_messages)
 
         # If LLM produced any tool_calls named "update_agent_state", strip out conversation_id
-        # and apply the remaining patch keys to our in‐memory state.
+        # and apply the remaining patch keys to our in-memory state.
         for tc in getattr(response, "tool_calls", []):
             if tc["name"] == "update_agent_state":
                 patch = {k: v for k, v in tc["args"].items() if k != "conversation_id"}
@@ -172,9 +209,8 @@ class LangGraphOrchestrator:
         state.workflow_status = WorkflowStatus.IN_PROGRESS
         return state
 
-
     async def _tool_node(self, state: AgentState) -> AgentState:
-        # Mark that we’re running tool‐invocation
+        # Mark that we're running tool-invocation
         if "tools" not in state.steps_done:
             state.steps_done.append("tools")
 
@@ -194,7 +230,7 @@ class LangGraphOrchestrator:
 
         # Now invoke the tools. LangGraph will look at state.context + the tool_calls
         # objects in the last AIMessage, match by name, and run them one by one.
-        raw = await self._tool_runner.ainvoke(state)
+        raw = await self._core_tool_runner.ainvoke(state)
 
         merged = state.model_copy(deep=True)
         new_msgs: List[BaseMessage] = []
@@ -204,16 +240,15 @@ class LangGraphOrchestrator:
             # raw is typically an AddableValuesDict with a "messages" list
             new_msgs = list(raw.get("messages", []))
 
-        # De‐duplicate: only append those new messages which are not already in `prior`
+        # De-duplicate: only append those new messages which are not already in `prior`
         seen_ids = {id(m) for m in prior}
         merged.messages = prior + [m for m in new_msgs if id(m) not in seen_ids]
         return merged
 
-
     async def _load_state_graph(self, state: AgentState) -> AgentState:
         db_state = load_agent_state(self.db_client, state.conversation_id)
         if db_state:
-            # Merge “new” messages & context from this turn into the persisted baseline
+            # Merge "new" messages & context from this turn into the persisted baseline
             delta = state.messages[len(db_state.messages) :]
             db_state.messages.extend(delta)
             db_state.context.update(state.context)
@@ -222,7 +257,6 @@ class LangGraphOrchestrator:
         # No existing row → just continue with the fresh state we were given
         return state
 
-
     async def _save_state_graph(self, state: AgentState) -> AgentState:
         try:
             save_agent_state(self.db_client, state.conversation_id, state)
@@ -230,13 +264,26 @@ class LangGraphOrchestrator:
             log.exception("save_state_graph failed: %s", exc)
         return state
 
+    def _route_next(self, state: AgentState) -> str:
+        """
+        Decide what the next node should be.
 
-    def _should_continue(self, state: AgentState) -> str:
-        # If the last message asked for tools, go to _tool_node, otherwise skip to save
+        Order of precedence
+        -------------------
+        1.  If the user has just uploaded a file and we have not analysed it yet
+            → jump to the `analyze_doc` node.
+        2.  If the last AIMessage contains tool calls
+            → jump to the generic `tools` node.
+        3.  Otherwise
+            → go straight to `save_state_graph`.
+        """
+        if state.user_upload_id and "analyze_doc" not in state.steps_done:
+            return "analyze_doc"
+
         if state.messages and getattr(state.messages[-1], "tool_calls", None):
             return "tools"
-        return "save"
 
+        return "save"
 
     def _extract_final_response(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """Pick the most suitable message to surface to the UI."""
@@ -266,7 +313,6 @@ class LangGraphOrchestrator:
 
         return {"kind": "text", "text": "Task completed."}
 
-
     async def _finalize_response(self, state: AgentState) -> AgentState:
         if "finalize" not in state.steps_done:
             state.steps_done.append("finalize")
@@ -275,7 +321,6 @@ class LangGraphOrchestrator:
         if state.workflow_status != WorkflowStatus.FAILED:
             state.workflow_status = WorkflowStatus.COMPLETED
         return state
-
 
     async def process_user_message(
         self, conversation_id: str, user_message: str, context: Dict[str, Any] | None
@@ -286,7 +331,7 @@ class LangGraphOrchestrator:
         2. Append the new HumanMessage.
         3. Run the graph: load ➜ agent ➜ (tools?) ➜ save ➜ finalize.
         4. Persist the updated AgentState back to Supabase.
-        5. Return the “final_response” (whatever UI payload or text the agent emitted).
+        5. Return the "final_response" (whatever UI payload or text the agent emitted).
         """
         # 1.  Load or initialize state
         state = load_agent_state(self.db_client, conversation_id) or AgentState(
@@ -294,14 +339,14 @@ class LangGraphOrchestrator:
             user_id=(context or {}).get("user_id", ""),
         )
 
-        # 2.  Append the incoming user message to the in‐memory state
+        # 2.  Append the incoming user message to the in-memory state
         state.messages.append(HumanMessage(content=user_message))
 
         # 3.  Merge any additional context (e.g. user_id, source_action, etc.)
         if context:
             state.context.update(context)
 
-        # 4.  Run the state‐graph
+        # 4.  Run the state-graph
         raw = await self.graph.ainvoke(state, RunnableConfig())
         final: AgentState = (
             raw
@@ -312,12 +357,79 @@ class LangGraphOrchestrator:
         # 5.  Persist the final state to Supabase
         save_agent_state(self.db_client, conversation_id, final)
 
-        # 6.  Figure out what “final_response” to send to the UI
+        # 6.  Figure out what "final_response" to send to the UI
         final_resp = final.context.get("final_response") or self._extract_final_response(
             final.messages
         )
 
-        # 7.  Insert that final payload into the messages table, so that the real‐time client sees it
+        # 7.  Insert that final payload into the messages table,
+        #     so that the real-time client sees it
+        assistant_msg = self.db_client.create_message(
+            conversation_id=conversation_id,
+            sender="assistant",
+            kind=final_resp["kind"],
+            body=json.dumps(final_resp),
+        )
+
+        return {
+            "message": assistant_msg,
+            "response": final_resp,
+            "workflow_status": final.workflow_status.value,
+            "steps_completed": len(final.steps_done),
+        }
+    
+    async def process_user_file(
+        self, conversation_id: str, file_info: Dict[str, Any], context: Dict[str, Any] | None = None
+    ) -> Dict[str, Any]:
+        """
+        Public entry point for a file upload.
+        Creates a human message describing the file and processes it through the workflow.
+        """
+        # 1. Load or initialize state
+        state = load_agent_state(self.db_client, conversation_id) or AgentState(
+            conversation_id=conversation_id,
+            user_id=(context or {}).get("user_id", ""),
+        )
+        
+        # 2. Create a natural language message about the file upload
+        file_message = (
+            f"[FILE_UPLOADED] I uploaded **{file_info.get('filename', 'a file')}** "
+            f"({file_info.get('mime_type', 'unknown type')}, "
+            f"{file_info.get('size_bytes', 0):,} bytes). "
+            f"You can access it at: {file_info.get('public_url', '')}"
+        )
+        
+        # 3. Append the file info as a HumanMessage
+        state.messages.append(HumanMessage(content=file_message))
+
+        # 4. Merge any additional context
+        if context:
+            state.context.update(context)
+        
+        # Add file info to context so tools can access it
+        state.context.update({
+            "uploaded_file": file_info,
+            "file_id": file_info.get("file_id"),
+            "public_url": file_info.get("public_url"),
+        })
+
+        # 5. Run the state-graph
+        raw = await self.graph.ainvoke(state, RunnableConfig())
+        final: AgentState = (
+            raw
+            if isinstance(raw, AgentState)
+            else _checkpoint_data_to_agent_state(dict(raw))
+        )
+
+        # 6. Persist the final state to Supabase
+        save_agent_state(self.db_client, conversation_id, final)
+
+        # 7. Figure out what "final_response" to send to the UI
+        final_resp = final.context.get("final_response") or self._extract_final_response(
+            final.messages
+        )
+
+        # 8. Insert that final payload into the messages table
         assistant_msg = self.db_client.create_message(
             conversation_id=conversation_id,
             sender="assistant",
@@ -332,12 +444,11 @@ class LangGraphOrchestrator:
             "steps_completed": len(final.steps_done),
         }
 
-
     async def handle_user_action(
         self, conversation_id: str, action: str, values: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Convert button clicks / uploads / form submissions into natural‐language
+        Convert button clicks / uploads / form submissions into natural-language
         messages so the main orchestrator can process them.
         """
         log.debug("handle_user_action action=%s values=%s", action, values)
@@ -365,14 +476,12 @@ class LangGraphOrchestrator:
 
             if action == "file_uploaded":
                 info = values.get("file_info", {})
-                msg = f"I uploaded a file: {info.get('name','unknown')}"
                 ctx = {
                     "user_id": values.get("user_id", ""),
                     "conversation_id": conversation_id,
                     "source_action": action,
-                    "file_info": info,
                 }
-                return await self.process_user_message(conversation_id, msg, ctx)
+                return await self.process_user_file(conversation_id, info, ctx)
 
             if action == "form_submitted":
                 form_data = values.get("form_data", {})
@@ -406,7 +515,6 @@ class LangGraphOrchestrator:
                 "steps_completed": 0,
             }
 
-
     def get_workflow_status(self, conversation_id: str) -> Optional[str]:
         state = load_agent_state(self.db_client, conversation_id)
         return state.workflow_status.value if state else None
@@ -425,7 +533,7 @@ class LangGraphOrchestrator:
             return False
 
     def _state_summary(self, s: AgentState) -> str:
-        """Return a terse, 1‐line summary for the system prompt."""
+        """Return a terse, 1-line summary for the system prompt."""
         parts = []
         if s.translate_to:
             parts.append(f"translate_to={s.translate_to}")
@@ -440,6 +548,30 @@ class LangGraphOrchestrator:
         return ", ".join(parts) or "empty"
 
     def _apply_state_patch(self, state: AgentState, patch: Dict[str, Any]) -> None:
+        """
+        Apply the partial update coming from `update_agent_state` tool calls.
+
+        –  Only allow known keys.
+        –  Enforce correct types so we never poison the state.
+        """
         for key, val in patch.items():
-            if hasattr(state, key):
-                setattr(state, key, val)
+            if not hasattr(state, key):
+                continue                                    # ignore unknown fields
+
+            print("applying state patc", key, val)        
+
+            # --- type guards ------------------------------------------------------
+            if key == "user_upload":
+                if isinstance(val, dict):                  # ✅ only accept dicts
+                    setattr(state, key, val)
+                    # keep convenience mirror value in sync
+                    state.user_upload_id = val.get("file_id", "")
+                else:
+                    log.warning("Ignored invalid user_upload patch (%s)", type(val))
+                continue
+
+            if key == "user_upload_id" and not isinstance(val, str):
+                log.warning("user_upload_id must be str – got %s", type(val))
+                continue
+
+            setattr(state, key, val)
