@@ -25,8 +25,8 @@ from src.db.checkpointer import (
     save_agent_state,
 )
 from src.db.db_client import SupabaseClient, supabase_client
-from src.agent.analyze_tools import get_analyze_tool
-from src.agent.agent_state import UploadAnalysis
+# from src.agent.analyze_tools import get_analyze_tool
+from src.agent.functions.smart_router import SmartRouter
 
 
 log = logging.getLogger(__name__)
@@ -43,21 +43,32 @@ class LangGraphOrchestrator:
         llm,
         tools: Optional[List[BaseTool]] = None,
         db_client: Optional[SupabaseClient] = None,
+        use_smart_routing: bool = True,
     ) -> None:
         if not db_client:
             raise ValueError("db_client is required for persistence")
 
         self.llm = llm
         self.db_client = db_client
+        self.use_smart_routing = use_smart_routing
 
         # Rename: use core_tools instead of tools
         self.core_tools: List[BaseTool] = tools or get_tools(db_client=db_client)
-        self.analyze_tool = get_analyze_tool(llm)  # Pass LLM to analyze tool
 
         # Bind core_tools to the LLM and wrap them in a ToolNode runner
         self.llm_with_core_tools = self.llm.bind_tools(self.core_tools)
-        self._analyze_runner = ToolNode([self.analyze_tool])
         self._core_tool_runner = ToolNode(self.core_tools)
+
+        self.smart_router = None
+        if self.use_smart_routing:
+            try:
+                self.smart_router = SmartRouter()
+                log.info("Smart router initialized successfully")
+            except Exception as e:
+                log.warning(f"Failed to initialize smart router: {e}. Falling back to rule-based routing.")
+                self.use_smart_routing = False
+
+
 
         # Pre-compile the graph (no checkpointing at this layer)
         self.graph = self._build_workflow_graph()
@@ -67,7 +78,7 @@ class LangGraphOrchestrator:
         Build the LangGraph for the document-translation workflow.
 
         ✔  Implemented nodes            → active
-        🕐  Future nodes / placeholders → commented-out
+        🕐  Future nodes / placeholders → now uncommented with print statements
         """
         g = StateGraph(AgentState)
 
@@ -79,15 +90,14 @@ class LangGraphOrchestrator:
         g.add_node("save_state_graph", self._save_state_graph)
         g.add_node("finalize",         self._finalize_response)
 
-        # ── 2. Place-holders (add real callables later) ───────────────────
-        # g.add_node("find_template",             self._find_template_node)          # 🕐
-        # g.add_node("extract_required_fields",   self._extract_required_fields_node) # 🕐
-        # g.add_node("ask_node",                  self._ask_node)                    # 🕐
-        # g.add_node("translate_required_fields", self._translate_required_fields_node) # 🕐
-        # g.add_node("fill_template",             self._fill_template_node)          # 🕐
-        # g.add_node("change_specific_field",     self._change_specific_field_node)  # 🕐
-        # g.add_node("manual_fill_template",      self._manual_fill_template_node)   # 🕐
-        # g.add_node("end_node",                  self._end_node)                    # 🕐
+        # ── 2. Placeholder nodes (now uncommented with debug prints) ───────
+        g.add_node("find_template",             self._find_template_node)
+        g.add_node("extract_required_fields",   self._extract_required_fields_node)
+        g.add_node("translate_required_fields", self._translate_required_fields_node)
+        g.add_node("fill_template",             self._fill_template_node)
+        g.add_node("change_specific_field",     self._change_specific_field_node)
+        g.add_node("manual_fill_template",      self._manual_fill_template_node)
+        g.add_node("end_node",                  self._end_node)
 
         # ── 3. Linear backbone you can already run ────────────────────────
         g.set_entry_point("load_state_graph")
@@ -108,17 +118,16 @@ class LangGraphOrchestrator:
             "agent",
             self._route_next,                # your smart router
             {
-                "analyze_doc": "analyze_doc",
-                # "find_template":             "find_template",            # 🕐
-                # "extract_required_fields":   "extract_required_fields",  # 🕐
-                # "ask":                       "ask_node",                 # 🕐
-                # "translate":                 "translate_required_fields",# 🕐
-                # "fill_template":             "fill_template",            # 🕐
-                # "manual_fill":               "manual_fill_template",     # 🕐
-                # "change_field":              "change_specific_field",    # 🕐
-                # "end":                       "end_node",                 # 🕐
-                "tools":       "tools",
-                "save":        "save_state_graph",
+                "analyze_doc":              "analyze_doc",
+                "find_template":             "find_template",
+                "extract_required_fields":   "extract_required_fields",
+                "translate":                 "translate_required_fields",
+                "fill_template":             "fill_template",
+                "manual_fill":               "manual_fill_template",
+                "change_field":              "change_specific_field",
+                "end":                       "end_node",
+                "tools":                    "tools",
+                "save":                     "save_state_graph",
             },
         )
 
@@ -179,8 +188,8 @@ class LangGraphOrchestrator:
 
         tool_hint = (
             "\n\nIf the user message gives you ANY new detail about the workflow "
-            "(translate_to, translate_from  etc.) **call the tool "
-            "`update_agent_state`** with only the keys that changed. "
+            "(translate_to, translate_from) **call the tool "
+            "`update_agent_state`** with only the keys that changed (the only thing that update_agent_state should translate_to and translate_from). "
             "You can then ALSO call other tools like show_buttons or show_upload_button "
             "in the same response to provide the next UI interaction. "
             f"Remember to always pass conversation_id='{state.conversation_id}' to tools. "
@@ -200,6 +209,8 @@ class LangGraphOrchestrator:
         # Mark that _agent_node has run
         if "agent" not in state.steps_done:
             state.steps_done.append("agent")
+
+        print("checking user upload in agent node", state.user_upload_public_url, state.user_upload_public_url)
 
         # Build a SystemMessage + existing chat history so far
         sys_msg = SystemMessage(content=self._create_system_message(state))
@@ -258,15 +269,18 @@ class LangGraphOrchestrator:
     async def _analyze_doc_node(self, state: AgentState) -> AgentState:
         """
         Use the analyze_upload tool to analyze the uploaded document.
-        The tool returns analysis data directly which we store in state.upload_analysis.
+        This calls the analyze tool directly in a deterministic way.
         """
-        if "analyze_doc" in state.steps_done:
-            # Already done in a previous turn
-            return state
+        print(f"🔍 [ANALYZE_DOC] Starting for conversation: {state.conversation_id}")
+        print(f"🔍 [ANALYZE_DOC] File ID: {state.user_upload_id}")
+        print(f"🔍 [ANALYZE_DOC] File URL: {state.user_upload_public_url}")
 
+        
         # Insert a message that we're analyzing the document
         analysis_msg = AIMessage(content="🔍 Analyzing the uploaded document to determine its type and language...")
         state.messages.append(analysis_msg)
+
+        print("user public url in analyze doc", state.user_upload_public_url)
         
         # Create message in database too
         self.db_client.create_message(
@@ -277,80 +291,244 @@ class LangGraphOrchestrator:
                 "text": "🔍 Analyzing the uploaded document to determine its type and language..."
             }),
         )
-
         # Mark this step as done
         state.steps_done.append("analyze_doc")
+        print(f"🔍 [ANALYZE_DOC] Added 'analyze_doc' to steps_done")
 
         try:
-            # Use the analyze tool to get analysis
-            analysis_result = self.analyze_tool.invoke({
-                "file_id": state.user_upload_id,
-                "public_url": state.user_upload_public_url
-            })
+            print(f"🔍 [ANALYZE_DOC] Calling analyze tool directly...")
+
+            # import analyze_tool result
+            from src.agent.functions.doc_ai import analyze_upload
+            
+            if state.user_upload_public_url == "" or state.user_upload_public_url is None:
+                raise ValueError("Missing required upload URL for document analysis")
+
+            analysis_result = await analyze_upload(
+                file_id=state.user_upload_id,
+                public_url=state.user_upload_public_url
+            )
             
             # Store the analysis in state
-            state.upload_analysis = UploadAnalysis(**analysis_result)
+            state.upload_analysis = {**analysis_result}
+            
+            print(f"🔍 [ANALYZE_DOC] Stored analysis in state")
             
             # Create a user-friendly summary
             doc_type = analysis_result.get("doc_type", "unknown")
             variation = analysis_result.get("variation", "standard")
             language = analysis_result.get("detected_language", "unknown")
-            confidence = analysis_result.get("confidence", 0.0)
-            
-            confidence_text = ""
-            if confidence > 0.8:
-                confidence_text = " (high confidence)"
-            elif confidence > 0.5:
-                confidence_text = " (medium confidence)"
-            elif confidence > 0.0:
-                confidence_text = " (low confidence)"
-            
+
             summary_parts = [
                 f"✅ **Document Analysis Complete**",
                 f"• **Type**: {doc_type.replace('_', ' ').title()}",
                 f"• **Variation**: {variation.replace('_', ' ').title()}",
-                f"• **Language**: {language.replace('_', ' ').title()}{confidence_text}",
+                f"• **Language**: {language.replace('_', ' ').title()}",
             ]
             
             if analysis_result.get("page_count"):
                 summary_parts.append(f"• **Pages**: {analysis_result['page_count']}")
             if analysis_result.get("page_size"):
                 summary_parts.append(f"• **Size**: {analysis_result['page_size']}")
+
+            upload_summary = analysis_result.get("content_summary", "")
+            summary_parts.append(f"• **Summary**: {upload_summary}")
             
             summary_msg = AIMessage(content="\n".join(summary_parts))
             state.messages.append(summary_msg)
             
-            # Also update the detected language in state if we found one
-            if language and language != "unknown" and not state.translate_from:
-                state.translate_from = language
-                
+            # Create message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "\n".join(summary_parts)
+                }),
+            )
+
+            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
+            
+            print(f"🔍 [ANALYZE_DOC] Analysis completed successfully")
+            
         except Exception as e:
+            print(f"🔍 [ANALYZE_DOC] ERROR: {str(e)}")
             log.exception(f"Error analyzing document: {e}")
             
             # Store minimal analysis on error
             state.upload_analysis = {
                 "file_id": state.user_upload_id,
+                "mime_type": "unknown",
                 "doc_type": "unknown",
                 "variation": "standard", 
                 "detected_language": "unknown",
-                "confidence": 0.0,
-                "error": str(e)
-            }
+                "confidence": 0.0
+                }
             
             error_msg = AIMessage(content="⚠️ Unable to fully analyze the document. Please verify the document type manually.")
             state.messages.append(error_msg)
+            
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "⚠️ Unable to fully analyze the document. Please verify the document type manually."
+                }),
+            )
 
+        print(f"🔍 [ANALYZE_DOC] Completed")
         return state
 
+
+
+    # ── PLACEHOLDER NODES (now uncommented with debug prints) ──────────────
+
+    async def _find_template_node(self, state: AgentState) -> AgentState:
+        """Find matching template based on document analysis."""
+        print("🔍 [DEBUG] Executing _find_template_node")
+        log.info("find_template_node executed for conversation %s", state.conversation_id)
+        
+        if "find_template" not in state.steps_done:
+            state.steps_done.append("find_template")
+        
+        # TODO: Implement template finding logic
+        # For now, just add a placeholder message
+        msg = AIMessage(content="🔍 Finding matching template based on document analysis...")
+        state.messages.append(msg)
+        
+        return state
+
+    async def _extract_required_fields_node(self, state: AgentState) -> AgentState:
+        """Extract required fields from the uploaded document."""
+        print("📋 [DEBUG] Executing _extract_required_fields_node")
+        log.info("extract_required_fields_node executed for conversation %s", state.conversation_id)
+        
+        if "extract_required_fields" not in state.steps_done:
+            state.steps_done.append("extract_required_fields")
+        
+        # TODO: Implement field extraction logic
+        msg = AIMessage(content="📋 Extracting required fields from the document...")
+        state.messages.append(msg)
+        
+        return state
+
+
+    async def _translate_required_fields_node(self, state: AgentState) -> AgentState:
+        """Translate the required fields to target language."""
+        print("🌐 [DEBUG] Executing _translate_required_fields_node")
+        log.info("translate_required_fields_node executed for conversation %s", state.conversation_id)
+        
+        if "translate_required_fields" not in state.steps_done:
+            state.steps_done.append("translate_required_fields")
+        
+        # TODO: Implement translation logic
+        msg = AIMessage(content="🌐 Translating required fields to target language...")
+        state.messages.append(msg)
+        
+        return state
+
+    async def _fill_template_node(self, state: AgentState) -> AgentState:
+        """Fill the template with translated fields."""
+        print("📝 [DEBUG] Executing _fill_template_node")
+        log.info("fill_template_node executed for conversation %s", state.conversation_id)
+        
+        if "fill_template" not in state.steps_done:
+            state.steps_done.append("fill_template")
+        
+        # TODO: Implement template filling logic
+        msg = AIMessage(content="📝 Filling template with translated information...")
+        state.messages.append(msg)
+        
+        return state
+
+    async def _change_specific_field_node(self, state: AgentState) -> AgentState:
+        """Change a specific field in the document."""
+        print("✏️ [DEBUG] Executing _change_specific_field_node")
+        log.info("change_specific_field_node executed for conversation %s", state.conversation_id)
+        
+        if "change_specific_field" not in state.steps_done:
+            state.steps_done.append("change_specific_field")
+        
+        # TODO: Implement field changing logic
+        msg = AIMessage(content="✏️ Changing specific field in the document...")
+        state.messages.append(msg)
+        
+        return state
+
+    async def _manual_fill_template_node(self, state: AgentState) -> AgentState:
+        """Manually fill template with user-provided information."""
+        print("✍️ [DEBUG] Executing _manual_fill_template_node")
+        log.info("manual_fill_template_node executed for conversation %s", state.conversation_id)
+        
+        if "manual_fill_template" not in state.steps_done:
+            state.steps_done.append("manual_fill_template")
+        
+        # TODO: Implement manual template filling logic
+        msg = AIMessage(content="✍️ Manually filling template with user information...")
+        state.messages.append(msg)
+        
+        return state
+
+    async def _end_node(self, state: AgentState) -> AgentState:
+        """End the workflow process."""
+        print("🏁 [DEBUG] Executing _end_node")
+        log.info("end_node executed for conversation %s", state.conversation_id)
+        
+        if "end" not in state.steps_done:
+            state.steps_done.append("end")
+        
+        # TODO: Implement workflow completion logic
+        msg = AIMessage(content="🏁 Workflow completed successfully!")
+        state.messages.append(msg)
+        
+        state.workflow_status = WorkflowStatus.COMPLETED
+        return state
+
+    # ── END PLACEHOLDER NODES ──────────────────────────────────────────────
+    def _merge_states(self, current_state: AgentState, db_state: AgentState) -> AgentState:
+        """
+        Merge current state (with new data) into persisted state (from DB).
+        Priority: current_state values override db_state when current has non-empty values.
+        """
+
+        print('states in merge_state', current_state.user_upload_public_url)
+        # Start with db_state as base
+        merged = db_state.model_copy(deep=True)
+        
+        # Merge messages (only new ones)
+        delta = current_state.messages[len(db_state.messages):]
+        merged.messages.extend(delta)
+        
+        # Merge context
+        merged.context.update(current_state.context)
+        
+        # Preserve file upload info from current state if it's newer/different
+        if current_state.user_upload_id and current_state.user_upload_id != merged.user_upload_id:
+            merged.user_upload_id = current_state.user_upload_id
+        if current_state.user_upload_public_url and current_state.user_upload_public_url != merged.user_upload_public_url:
+            merged.user_upload_public_url = current_state.user_upload_public_url
+        if current_state.upload_analysis and current_state.upload_analysis != merged.upload_analysis:
+            merged.upload_analysis = current_state.upload_analysis
+        
+        # Preserve other potentially new fields from current state
+        if current_state.translate_to and current_state.translate_to != merged.translate_to:
+            merged.translate_to = current_state.translate_to
+        if current_state.translate_from and current_state.translate_from != merged.translate_from:
+            merged.translate_from = current_state.translate_from
+        
+        return merged
+
     async def _load_state_graph(self, state: AgentState) -> AgentState:
+        print("Checkin state user upload before loading the state", state.user_upload_id, state.user_upload_public_url)
         db_state = load_agent_state(self.db_client, state.conversation_id)
         if db_state:
-            # Merge "new" messages & context from this turn into the persisted baseline
-            delta = state.messages[len(db_state.messages) :]
-            db_state.messages.extend(delta)
-            db_state.context.update(state.context)
-            return db_state
+            merged_state = self._merge_states(state, db_state)
+            print("Checking state user_upload if has db_state ", merged_state.user_upload_id, merged_state.user_upload_public_url)
+            return merged_state
 
+        print("Checking state user_upload when no existing row in db", state.user_upload_id, state.user_upload_public_url)
         # No existing row → just continue with the fresh state we were given
         return state
 
@@ -363,24 +541,24 @@ class LangGraphOrchestrator:
 
     def _route_next(self, state: AgentState) -> str:
         """
-        Decide what the next node should be.
-
-        Order of precedence
-        -------------------
-        1.  If the user has just uploaded a file and we have not analysed it yet
-            → jump to the `analyze_doc` node.
-        2.  If the last AIMessage contains tool calls
-            → jump to the generic `tools` node.
-        3.  Otherwise
-            → go straight to `save_state_graph`.
+        Decide what the next node should be using smart routing with fallback.
+        
+        This method now uses the SmartRouter if available, otherwise falls back
+        to the original rule-based routing logic.
         """
-        if state.user_upload_id and "analyze_doc" not in state.steps_done:
-            return "analyze_doc"
+        # Try smart routing first if enabled and available
+        if self.use_smart_routing and self.smart_router:
+            try:
+                next_node = self.smart_router.route_next(state)
+                print(f"Smart router decision for conversation {state.conversation_id}: {next_node}")
+                return next_node
+            except Exception as e:
+                log.warning(f"Smart router failed for conversation {state.conversation_id}: {e}. Using fallback.")
+                # Continue to fallback routing below
         
-        if state.messages and getattr(state.messages[-1], "tool_calls", None):
-            return "tools"
-        
-        return "save"
+        # Fallback to original rule-based routing
+        log.info(f"Using rule-based routing for conversation {state.conversation_id}")
+        return self._rule_based_routing(state)
 
     def _extract_final_response(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """Pick the most suitable message to surface to the UI."""
@@ -506,6 +684,8 @@ class LangGraphOrchestrator:
         # 5. Store file info directly in state
         state.user_upload_id = file_info.get("file_id", "")
         state.user_upload_public_url = file_info.get("public_url", "")
+
+        print("Checking user upload state before invoking", state.user_upload_id, state.user_upload_public_url)
         
         # Also add file info to context for tools
         state.context.update({
