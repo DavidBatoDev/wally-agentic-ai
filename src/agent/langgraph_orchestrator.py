@@ -27,6 +27,7 @@ from src.db.checkpointer import (
 from src.db.db_client import SupabaseClient, supabase_client
 # from src.agent.analyze_tools import get_analyze_tool
 from src.agent.functions.smart_router import SmartRouter
+from src.agent.helpers import create_message_if_not_duplicate
 
 
 log = logging.getLogger(__name__)
@@ -210,8 +211,6 @@ class LangGraphOrchestrator:
         if "agent" not in state.steps_done:
             state.steps_done.append("agent")
 
-        print("checking user upload in agent node", state.user_upload_public_url, state.user_upload_public_url)
-
         # Build a SystemMessage + existing chat history so far
         sys_msg = SystemMessage(content=self._create_system_message(state))
         llm_messages: List[BaseMessage] = [sys_msg, *state.messages]
@@ -272,15 +271,10 @@ class LangGraphOrchestrator:
         This calls the analyze tool directly in a deterministic way.
         """
         print(f"🔍 [ANALYZE_DOC] Starting for conversation: {state.conversation_id}")
-        print(f"🔍 [ANALYZE_DOC] File ID: {state.user_upload_id}")
-        print(f"🔍 [ANALYZE_DOC] File URL: {state.user_upload_public_url}")
-
         
         # Insert a message that we're analyzing the document
         analysis_msg = AIMessage(content="🔍 Analyzing the uploaded document to determine its type and language...")
         state.messages.append(analysis_msg)
-
-        print("user public url in analyze doc", state.user_upload_public_url)
         
         # Create message in database too
         self.db_client.create_message(
@@ -293,13 +287,12 @@ class LangGraphOrchestrator:
         )
         # Mark this step as done
         state.steps_done.append("analyze_doc")
-        print(f"🔍 [ANALYZE_DOC] Added 'analyze_doc' to steps_done")
 
         try:
             print(f"🔍 [ANALYZE_DOC] Calling analyze tool directly...")
 
             # import analyze_tool result
-            from src.agent.functions.doc_ai import analyze_upload
+            from agent.functions.analyze_doc_node_helper import analyze_upload
             
             if state.user_upload_public_url == "" or state.user_upload_public_url is None:
                 raise ValueError("Missing required upload URL for document analysis")
@@ -321,18 +314,18 @@ class LangGraphOrchestrator:
 
             summary_parts = [
                 f"✅ **Document Analysis Complete**",
-                f"• **Type**: {doc_type.replace('_', ' ').title()}",
-                f"• **Variation**: {variation.replace('_', ' ').title()}",
-                f"• **Language**: {language.replace('_', ' ').title()}",
+                f"• **Type**: {doc_type.replace('_', ' ').title()}\n",
+                f"• **Variation**: {variation.replace('_', ' ').title()}\n",
+                f"• **Language**: {language.replace('_', ' ').title()}\n",
             ]
             
             if analysis_result.get("page_count"):
-                summary_parts.append(f"• **Pages**: {analysis_result['page_count']}")
+                summary_parts.append(f"• **Pages**: {analysis_result['page_count']}\n")
             if analysis_result.get("page_size"):
-                summary_parts.append(f"• **Size**: {analysis_result['page_size']}")
+                summary_parts.append(f"• **Size**: {analysis_result['page_size']}\n")
 
             upload_summary = analysis_result.get("content_summary", "")
-            summary_parts.append(f"• **Summary**: {upload_summary}")
+            summary_parts.append(f"• **Summary**: {upload_summary}\n")
             
             summary_msg = AIMessage(content="\n".join(summary_parts))
             state.messages.append(summary_msg)
@@ -521,14 +514,11 @@ class LangGraphOrchestrator:
         return merged
 
     async def _load_state_graph(self, state: AgentState) -> AgentState:
-        print("Checkin state user upload before loading the state", state.user_upload_id, state.user_upload_public_url)
         db_state = load_agent_state(self.db_client, state.conversation_id)
         if db_state:
             merged_state = self._merge_states(state, db_state)
-            print("Checking state user_upload if has db_state ", merged_state.user_upload_id, merged_state.user_upload_public_url)
             return merged_state
 
-        print("Checking state user_upload when no existing row in db", state.user_upload_id, state.user_upload_public_url)
         # No existing row → just continue with the fresh state we were given
         return state
 
@@ -637,13 +627,13 @@ class LangGraphOrchestrator:
             final.messages
         )
 
-        # 7.  Insert that final payload into the messages table,
-        #     so that the real-time client sees it
-        assistant_msg = self.db_client.create_message(
+        # 7.  Create message only if it's not a duplicate
+        assistant_msg = create_message_if_not_duplicate(
+            db_client=self.db_client,
             conversation_id=conversation_id,
             sender="assistant",
             kind=final_resp["kind"],
-            body=json.dumps(final_resp),
+            final_resp=final_resp
         )
 
         return {
@@ -652,7 +642,8 @@ class LangGraphOrchestrator:
             "workflow_status": final.workflow_status.value,
             "steps_completed": len(final.steps_done),
         }
-    
+
+    # And update your process_user_file method:
     async def process_user_file(
         self, conversation_id: str, file_info: Dict[str, Any], context: Dict[str, Any] | None = None
     ) -> Dict[str, Any]:
@@ -684,8 +675,6 @@ class LangGraphOrchestrator:
         # 5. Store file info directly in state
         state.user_upload_id = file_info.get("file_id", "")
         state.user_upload_public_url = file_info.get("public_url", "")
-
-        print("Checking user upload state before invoking", state.user_upload_id, state.user_upload_public_url)
         
         # Also add file info to context for tools
         state.context.update({
@@ -710,12 +699,13 @@ class LangGraphOrchestrator:
             final.messages
         )
 
-        # 9. Insert that final payload into the messages table
-        assistant_msg = self.db_client.create_message(
+        # 9. Create message only if it's not a duplicate
+        assistant_msg = create_message_if_not_duplicate(
+            db_client=self.db_client,
             conversation_id=conversation_id,
             sender="assistant",
             kind=final_resp["kind"],
-            body=json.dumps(final_resp),
+            final_resp=final_resp
         )
 
         return {
