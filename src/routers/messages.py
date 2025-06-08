@@ -11,6 +11,7 @@ import json
 from ..dependencies import get_current_user, get_langgraph_orchestrator
 from ..models.user import User
 from ..db.db_client import supabase_client
+import traceback
 
 router = APIRouter()
 
@@ -113,6 +114,7 @@ async def send_text_message(
     except Exception as exc:
         # log locally, then surface a friendly bubble to the user
         print(f"Error processing message: {exc}")
+        # traceback.print_exc()
 
         error_payload = {
             "kind": "text",

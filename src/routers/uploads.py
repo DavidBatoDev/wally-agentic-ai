@@ -9,6 +9,7 @@ from pydantic import BaseModel, UUID4
 import uuid
 import os
 import json
+import traceback
 
 from ..dependencies import get_current_user, get_langgraph_orchestrator
 from ..models.user import User
@@ -183,6 +184,7 @@ async def upload_file(
         raise
     except Exception as e:
         print(f"Error uploading file: {e}")
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to upload file: {str(e)}"

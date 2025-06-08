@@ -18,7 +18,7 @@ settings = get_settings()
 from src.models.user import User
 
 # Set up logging
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 # Use standard HTTP Bearer for auth
 security = HTTPBearer()
@@ -47,7 +47,7 @@ async def get_current_user(
     try:
         # Get the token
         token = credentials.credentials
-        logger.info(f"Token received: {token[:10]}...")
+        # logger.info(f"Token received: {token[:10]}...")
         
         # Prepare JWT options to disable audience validation since we know this causes issues
         jwt_options = {
@@ -89,23 +89,23 @@ async def get_current_user(
             # Fallbacks if 'sub' doesn't exist
             user_id = payload.get("user_id") or payload.get("id")
             if user_id is None:
-                logger.error("No user ID found in token payload")
+                # logger.error("No user ID found in token payload")
                 raise credentials_exception
         
         # Extract email from the token
         email = payload.get("email")
         
-        logger.info(f"Successfully authenticated user: {user_id}, email: {email}")
+        # logger.info(f"Successfully authenticated user: {user_id}, email: {email}")
         
         return User(
             id=user_id,
             email=email,
         )
     except PyJWTError as e:
-        logger.error(f"JWT verification error: {str(e)}")
+        # logger.error(f"JWT verification error: {str(e)}")
         raise credentials_exception
     except Exception as e:
-        logger.error(f"Unexpected error in authentication: {str(e)}")
+        # logger.error(f"Unexpected error in authentication: {str(e)}")
         raise credentials_exception
 
 # Optional dependency for routes that need the current user but can work without authentication
