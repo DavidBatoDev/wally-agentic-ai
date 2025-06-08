@@ -11,6 +11,7 @@ import logging
 
 # Set up logger
 logging.basicConfig(level=logging.INFO)
+logging.getLogger('httpx').setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file if it exists
