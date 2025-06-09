@@ -48,21 +48,6 @@ def get_tool(
     return None
 
 
-class MultiplicationInput(BaseModel):
-    a: float = Field(description="First number")
-    b: float = Field(description="Second number")
-
-class CalculateInput(BaseModel):
-    expression: str = Field(
-        description="Math expression to evaluate, e.g. '(3 + 4) * 5'"
-    )
-
-class ShowButtonsInput(BaseModel):
-    prompt: str
-    buttons: List[Dict[str, str]]
-    context: Optional[Dict[str, Any]] = None
-    conversation_id: Optional[str] = None
-
 class ShowUploadButtonInput(BaseModel):
     prompt: str
     accepted_types: Optional[List[str]] = None
@@ -81,27 +66,10 @@ class AgentStatePatch(BaseModel):
         None, 
         description="Target language"
     )
-    upload_analysis: Dict[str, Any] = Field(default_factory=dict)
-    user_upload_public_url: Optional[str] = Field(
-        None, 
-        description="The public URL of the uploaded file"
-    )
-    user_upload_id: Optional[str] = Field(
-        None,
-        description="Supabase UUID of the user-uploaded file",
-    )
-    template_id: Optional[str] = Field(
-        None, 
-        description="The template ID to use to find the template document for translation")
-    workflow_status: Optional[str] = Field(
-        None,
-        description="pending, in_progress, waiting_confirmation, completed",
-    )
     conversation_id: Optional[str] = Field(
         None, 
         description="Auto-filled by orchestrator"
     )
-
 
 
 def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
@@ -109,33 +77,10 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
     tools: List[BaseTool] = []
 
     # ------------------------------------------------------
-    # 1) A simple "multiply" tool
-    def multiply_numbers(a: float, b: float) -> str:
-        print(f"[TOOL] multiply_numbers called with arguments: a={a}, b={b}")
-        try:
-            result = a * b
-            print(f"[TOOL] multiply_numbers result: {result}")
-            logger.debug("multiply_numbers %s × %s = %s", a, b, result)
-            return f"The result of {a} × {b} is {result}"
-        except Exception as exc:
-            print(f"[TOOL] multiply_numbers error: {exc}")
-            raise ToolExecutionError(f"Multiplication failed: {exc}") from exc
-
-    tools.append(
-        StructuredTool.from_function(
-            func=multiply_numbers,
-            name="multiply_numbers",
-            description="Multiply two numbers together.",
-            args_schema=MultiplicationInput,
-        )
-    )
-
-    # ------------------------------------------------------
-    # 2) update_agent_state (synchronous!)
+    # 1) update_agent_state (synchronous!)
     def update_agent_state(**patch_kwargs) -> str:
         """
-        Called by the LLM to store new workflow info.
-        We also craft a friendly confirmation for the user.
+        A tool to update the agent's state to identify if the user provided a new infromation about what language do they want to translate to.
         """
         print(f"[TOOL] update_agent_state called with arguments: {patch_kwargs}")
         
@@ -145,26 +90,8 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
             lang = patch_kwargs["translate_to"]
             bullet.append(f"✔️ Target language set to **{lang}**.")
 
-        if "translate_from" in patch_kwargs:
-            src = patch_kwargs["translate_from"]
-            bullet.append(f"✔️ Source language noted as **{src}**.")
-
-        if "user_upload_public_url" in patch_kwargs:
-            src = patch_kwargs["translate_from"]
-            bullet.append(f"user upload public_url is set")
-
-        if "template_id" in patch_kwargs:
-            bullet.append("✔️ Template ID received and stored.")
-
-        if "doc_type" in patch_kwargs:
-            bullet.append(f"✔️ Document type recorded: {patch_kwargs['doc_type']}.")
-
         if not bullet:
             bullet.append("Workflow state updated.")
-
-        # 👉 teach the user what to do next
-        if "user_upload_id" not in patch_kwargs:
-            bullet.append("📄 Please upload the document whenever you're ready.")
 
         result = " ".join(bullet)
         print(f"[TOOL] update_agent_state result: {result}")
@@ -181,79 +108,14 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
     tools.append(
         StructuredTool.from_function(
             func=update_agent_state,
-            name="update_agent_state",
+            name="update_translate_to",
             description=(
-                "Record NEW information you inferred from the user's message. "
-                "Only include keys that changed."
+                "Update the agent's state with new information, such as the target language for translation."
             ),
             args_schema=AgentStatePatch,
-            return_direct=False,
-        )
-    )
-
-    def show_buttons(
-        prompt: str,
-        buttons: List[Dict[str, str]],
-        context: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None,
-    ) -> str:
-        print(f"[TOOL] show_buttons called with arguments: prompt='{prompt}', buttons={buttons}, context={context}, conversation_id={conversation_id}")
-        
-        logger.debug("show_buttons prompt=%s", prompt)
-
-        formatted: List[Dict[str, str]] = []
-        for i, btn in enumerate(buttons):
-            if isinstance(btn, str):
-                # Handle string buttons
-                value = btn.lower().replace(" ", "_")
-                formatted.append(
-                    {
-                        "label": btn,
-                        "action": f"button_{value}",
-                        "value": value,
-                        "text": btn,
-                    }
-                )
-            else:
-                # Handle dictionary buttons - use the provided text and value
-                text = btn.get("text", f"Button {i}")
-                value = btn.get("value", text.lower().replace(" ", "_"))
-                label = btn.get("label", text)  # Use text as label if no label provided
-                
-                formatted.append(
-                    {
-                        "label": label,
-                        "action": btn.get("action", f"button_{value}"),
-                        "value": value,
-                        "text": text,
-                    }
-                )
-
-        payload: Dict[str, Any] = {
-            "kind": "buttons",
-            "prompt": prompt,
-            "buttons": formatted,
-            "instructions": "Click a button to continue",
-        }
-        if context:
-            payload["context"] = context
-        if conversation_id:
-            payload["conversation_id"] = conversation_id
-
-        result = json.dumps(payload)
-        print(f"[TOOL] show_buttons result: {result}")
-        return result
-
-    tools.append(
-        StructuredTool.from_function(
-            func=show_buttons,
-            name="show_buttons",
-            description="Render interactive buttons.",
-            args_schema=ShowButtonsInput,
             return_direct=True,
         )
     )
-
     # ------------------------------------------------------
     # 4) show_upload_button
     def show_upload_button(
@@ -271,6 +133,15 @@ def get_tools(db_client: Optional[SupabaseClient] = None) -> List[BaseTool]:
 
         if accepted_types is None:
             accepted_types = ["image/jpeg", "image/png", "image/gif", "application/pdf"]
+        if ".pdf" in accepted_types:
+            accepted_types.append("application/pdf")
+        if ".txt" in accepted_types:
+            accepted_types.append("text/plain")
+        if ".docx" in accepted_types:
+            accepted_types.append("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            
+        accepted_types.append("image/png")
+        accepted_types.append("image/jpeg")
 
         payload: Dict[str, Any] = {
             "kind": "upload_button",

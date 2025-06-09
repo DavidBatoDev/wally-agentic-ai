@@ -1,4 +1,4 @@
-# backend/src/agent/functions/doc_ai.py
+# backend/src/agent/functions/analyze_doc_helper.py
 """
 Document analysis client using Gemini API for content extraction and language detection.
 
@@ -69,7 +69,6 @@ def _detect_mime_type(public_url: str) -> str:
     else:
         return 'application/octet-stream'
 
-
 def _determine_doc_type(mime_type: str) -> str:
     """Determine document type based on MIME type."""
     if mime_type.startswith('image/'):
@@ -86,6 +85,44 @@ def _determine_doc_type(mime_type: str) -> str:
         return 'unknown'
 
 
+def _is_psa_or_birth_certificate_templatable(doc_classification: str, page_count: int, confidence: float) -> bool:
+    """
+    Determine if document is templatable based on stricter PSA/birth certificate criteria.
+    
+    Args:
+        doc_classification: The classified document type
+        page_count: Number of pages in the document
+        confidence: Confidence level of the analysis
+        
+    Returns:
+        bool: True if document meets templatable criteria
+    """
+    # Must be 1-2 pages only
+    if page_count is None or page_count < 1 or page_count > 2:
+        log.debug("Document not templatable: page_count=%s (must be 1-2 pages)", page_count)
+        return False
+    
+    # Must have reasonable confidence in analysis
+    if confidence < 0.5:
+        log.debug("Document not templatable: confidence=%.2f (must be >= 0.5)", confidence)
+        return False
+    
+    # Must be specifically PSA or birth certificate related
+    psa_birth_classifications = {
+        "psa", 
+        "birth_certificate",
+        "certificate"  # Keep this as it might catch PSA certificates
+    }
+    
+    if doc_classification.lower() not in psa_birth_classifications:
+        log.debug("Document not templatable: classification='%s' (must be PSA or birth certificate)", doc_classification)
+        return False
+    
+    log.debug("Document IS templatable: classification='%s', pages=%d, confidence=%.2f", 
+              doc_classification, page_count, confidence)
+    return True
+
+
 async def _download_file(url: str) -> bytes:
     """Download file from URL and return as bytes."""
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
@@ -99,15 +136,17 @@ def _create_gemini_payload(file_data: bytes, mime_type: str) -> Dict[str, Any]:
     # Encode file data as base64
     file_b64 = base64.b64encode(file_data).decode('utf-8')
     
-    # Create the enhanced analysis prompt
+    # Create the enhanced analysis prompt with specific focus on PSA/birth certificates
     prompt = """
 Analyze this document thoroughly and provide a JSON response with the following information:
 - detected_language: ISO 639-1 language code (e.g., "en", "es", "fr", "de", "zh", etc.)
 - confidence: float between 0.0 and 1.0 indicating confidence in the analysis
-- page_count: estimated number of pages (integer)
+- page_count: exact number of pages (integer) - be precise about this count
 - page_size: estimated page size (e.g., "A4", "Letter", "Legal", "variable")
 - content_summary: detailed explanation of the document content and structure (see below for requirements)
-- doc_classification: classification like "invoice", "contract", "report", "letter", "form", "certificate", "identification", "other"
+- doc_classification: classification like "psa", "birth_certificate", "death_certificate", "marriage_certificate", "id", "passport", "driver_license", "visa", "certificate", "diploma", "transcript", "contract", "agreement", "invoice", "receipt", "report", "letter", "form", "application", "prescription", "medical_document", "legal_document", "business_document", "academic_document", "official_document", "other"
+- is_psa_document: boolean indicating if this appears to be a PSA (Philippine Statistics Authority) document
+- has_psa_features: boolean indicating if document has PSA-specific features (security paper, official seals, QR codes, reference numbers, etc.)
 
 For the content_summary field, provide a comprehensive explanation that includes:
 1. What type of document this is and its primary purpose
@@ -119,6 +158,18 @@ For the content_summary field, provide a comprehensive explanation that includes
 7. Any specific requirements or standards this document appears to follow
 
 Make the content_summary detailed and informative (aim for 300-500 characters) as it will be shown to users to help them understand what was detected in their document.
+
+SPECIAL FOCUS: Pay close attention to identifying PSA documents and birth certificates:
+- Look for "PSA" text, logos, or watermarks
+- Check for security features like special paper texture, watermarks
+- Look for official seals, stamps, or government insignia
+- Check for reference numbers, QR codes, or barcodes
+- Identify birth certificate specific fields (name, birth date, place of birth, parents' names, etc.)
+- Note any Philippine government formatting or standards
+
+For page_count: Be very precise. Count actual document pages, not including blank pages or covers.
+
+IMPORTANT: Be extremely accurate about the page count and document classification. The system will use these values to determine if the document qualifies for template processing.
 
 Return only valid JSON without any markdown formatting or additional text.
 """
@@ -139,7 +190,7 @@ Return only valid JSON without any markdown formatting or additional text.
         ],
         "generationConfig": {
             "temperature": 0.1,
-            "maxOutputTokens": 2000  # Increased to accommodate longer content_summary
+            "maxOutputTokens": 2000
         }
     }
 
@@ -192,14 +243,13 @@ async def _call_gemini_api(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def _normalize_url(maybe_url: str) -> str:
     parsed = urlparse(maybe_url)
-    # If there’s no scheme, assume HTTPS
+    # If there's no scheme, assume HTTPS
     if not parsed.scheme:
         return "https://" + maybe_url
     return maybe_url
 
 async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
     """Download file and analyze it using Gemini API."""
-
 
     try:
         # Detect MIME type and document type
@@ -222,9 +272,12 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
         
         # Ensure content_summary has a fallback if not provided or too short
         content_summary = gemini_result.get("content_summary", "")
+        doc_classification = gemini_result.get("doc_classification", "other")
+        page_count = gemini_result.get("page_count", 0)
+        confidence = float(gemini_result.get("confidence", 0.0))
+        
         if not content_summary or len(content_summary.strip()) < 50:
             # Generate a basic fallback summary based on doc classification and type
-            doc_classification = gemini_result.get("doc_classification", "document")
             detected_language = gemini_result.get("detected_language", "unknown")
             
             content_summary = (
@@ -233,6 +286,13 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
                 f"Key information and data fields have been identified for further processing."
             )
         
+        # Use improved templatable check specifically for PSA/birth certificates
+        is_templatable = _is_psa_or_birth_certificate_templatable(
+            doc_classification, 
+            page_count, 
+            confidence
+        )
+        
         # Build the final analysis result
         analysis_result = {
             "file_id": file_id,
@@ -240,16 +300,20 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
             "doc_type": doc_type,
             "variation": "standard",
             "detected_language": gemini_result.get("detected_language", "unknown"),
-            "confidence": float(gemini_result.get("confidence", 0.0)),
-            "page_count": gemini_result.get("page_count"),
+            "confidence": confidence,
+            "page_count": page_count,
             "page_size": gemini_result.get("page_size"),
             "analysis_timestamp": None,
             "content_summary": content_summary,
-            "doc_classification": gemini_result.get("doc_classification", "other")
+            "doc_classification": doc_classification,
+            "is_templatable": is_templatable,
+            "is_psa_document": gemini_result.get("is_psa_document", False),
+            "has_psa_features": gemini_result.get("has_psa_features", False)
         }
         
         log.debug("Analysis complete → %s", {k: v for k, v in analysis_result.items() if k != "content_summary"})
         log.debug("Content summary length: %d characters", len(content_summary))
+        log.debug("Document is_templatable: %s", is_templatable)
         return analysis_result
         
     except Exception as e:
@@ -265,6 +329,9 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
             f"Manual verification of extracted content may be recommended."
         )
         
+        # Conservative fallback - assume not templatable unless we can verify it meets criteria
+        fallback_is_templatable = False
+        
         return {
             "file_id": file_id,
             "mime_type": mime_type,
@@ -276,5 +343,8 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
             "page_size": None,
             "analysis_timestamp": None,
             "content_summary": fallback_summary,
-            "doc_classification": "other"
+            "doc_classification": "other",
+            "is_templatable": fallback_is_templatable,
+            "is_psa_document": False,
+            "has_psa_features": False
         }

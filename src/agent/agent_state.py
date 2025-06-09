@@ -1,4 +1,5 @@
 # backend/src/agent/agent_state.py
+
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -15,46 +16,72 @@ class WorkflowStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class Upload(BaseModel):
+    """
+    Represents a single file_upload. Stores metadata and (eventual) analysis results.
+    """
+    file_id: str = ""                # e.g. Supabase file ID
+    mime_type: Optional[str] = ""    # e.g. "image/png/pdf"
+    public_url: str = ""             # e.g. publicly accessible URL
+    filename: Optional[str] = ""     # original filename
+    size_bytes: Optional[int] = 0
+    analysis: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    is_templatable: Optional[bool] = False  # whether this upload can be used in templates
+    class Config:
+        arbitrary_types_allowed = True
+
+class CurrentDocumentInWorkflow(BaseModel):
+    """
+    Represents the current state of the document being processed.
+    This includes the document's content, metadata, and any additional information
+    needed for processing.
+    """
+    file_id: str = ""  # e.g. Supabase file ID (Will get the CurrentDocumentInWorkflow if a find_template_node is found)
+    base_file_public_url: str = ""  # publicly accessible URL of the document (Will get the CurrentDocumentInWorkflow if a find_template_node is found)
+    template_id: str = ""  # ID of the template used, if any (Will get this using the find_template_node)
+    template_file_public_url: str = "" # template file url (Will get this using the find_template_node)
+    template_required_fields: Dict[str, Any] = Field(default_factory=dict) # require (Will get this using the find_template_node)
+    extracted_fields_from_raw_ocr: Dict[str, Any] = Field(default_factory=dict)  # fields extracted from the document (will get this using extract_values_from_base_file_url)
+    filled_fields: Dict[str, Any] = Field(default_factory=dict)  # fields filled in the document (will get this in manual fill_node)
+    translated_fields: Dict[str, Any] = Field(default_factory=dict)  # fields translated, if applicable (will get this using translated_fields)
+
+    class Config:
+        arbitrary_types_allowed = True
 
 class AgentState(BaseModel):
     """
-    Pydantic model holding the entire workflow state.  Everything is JSON-serialisable
-    and validated, yet keeps rich `BaseMessage` objects in memory.
+    Pydantic model holding the entire workflow state. Everything is JSON‐serializable,
+    yet we keep rich `BaseMessage` objects in memory.
     """
 
-    # Chat history
+    # 1) Chat history
     messages: List[BaseMessage] = Field(default_factory=list)
     conversation_history: List[BaseMessage] = Field(default_factory=list)
-
-    # Identifiers
+    # 2) Identifiers
     conversation_id: str = ""
     user_id: str = ""
-
-    # Status / context
+    # 3) Status / context
     workflow_status: WorkflowStatus = WorkflowStatus.PENDING
     context: Dict[str, Any] = Field(default_factory=dict)
-
-    # File upload
-    user_upload_id: str = ""
-    user_upload_public_url: str = ""
-    upload_analysis: dict = {}
-
-    # Field tracking
-    extracted_required_fields: Dict[str, Any] = Field(default_factory=dict)
-    translated_required_fields: Dict[str, Any] = Field(default_factory=dict)
-    filled_required_fields: Dict[str, Any] = Field(default_factory=dict)
-    missing_required_fields: Dict[str, Any] = Field(default_factory=dict)
-
-    # Template / translation
-    translate_from: Optional[str] = ""
-    translate_to: Optional[str] = ""
-    template_id: str = ""
-    template_required_fields: Dict[str, str] = Field(default_factory=dict)
-
-    # Output & audit
-    document_version_id: str = ""
+    # 4) File uploads (split into two categories)
+    user_uploads: List[Upload] = Field(default_factory=list)
+    # 5) Detected user intent if the 
+    translate_to: Optional[str] = "" # we will get this node (ask_user_desired_language)
+    # 7) Current Document We are Working On
+    current_document_in_workflow_state: CurrentDocumentInWorkflow = Field(default_factory=dict) 
+    # 8) Output & audit
+    current_document_version_id: str = ""
     steps_done: List[str] = Field(default_factory=list)
+    # 9) if WorkflowStatus.WAITING_CONFIRMATION go to this node
+    current_pending_node: str = ""
 
     class Config:
         arbitrary_types_allowed = True
         json_encoders = {WorkflowStatus: lambda v: v.value}
+
+    @property
+    def latest_upload(self) -> Optional[Upload]:
+        """
+        Return the most recent "normal" upload, or None if there are none.
+        """
+        return self.user_uploads[-1] if self.user_uploads else None
