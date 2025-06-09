@@ -2,7 +2,7 @@
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
-from src.agent.agent_state import AgentState, WorkflowStatus
+from src.agent.agent_state import AgentState, WorkflowStatus, CurrentDocumentInWorkflow
 from src.db.db_client import SupabaseClient
 from langchain.schema.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain.schema.messages import BaseMessage
@@ -41,6 +41,7 @@ def load_agent_state(db_client: SupabaseClient, conversation_id: str) -> Optiona
 def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: AgentState) -> bool:
     """
     Serialize AgentState Pydantic model into a JSON-ready dict, then insert/update Supabase.
+    Also saves the current_document_in_workflow_state to the workflows table.
     Returns True on success.
     """
     try:
@@ -52,6 +53,7 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
             conversation_id = state.conversation_id or ""
         if not conversation_id:               # still empty → bail early
             raise ValueError("conversation_id missing when saving AgentState")
+        
         # Use Pydantic's model_dump for serialization
         state_data: Dict[str, Any] = _agent_state_to_checkpoint_data(state)
         
@@ -65,7 +67,8 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
             
         steps_done = state.steps_done
 
-        existing = (
+        # Save agent_state table
+        existing_agent = (
             db_client.client
             .table("agent_state")
             .select("id")
@@ -73,9 +76,9 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
             .execute()
         )
 
-        if existing.data:
-            # Update existing record
-            res = (
+        if existing_agent.data:
+            # Update existing agent_state record
+            agent_res = (
                 db_client.client
                 .table("agent_state")
                 .update({
@@ -88,8 +91,8 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
                 .execute()
             )
         else:
-            # Insert a new row
-            res = (
+            # Insert a new agent_state row
+            agent_res = (
                 db_client.client
                 .table("agent_state")
                 .insert({
@@ -101,11 +104,116 @@ def save_agent_state(db_client: SupabaseClient, conversation_id: str, state: Age
                 .execute()
             )
 
-        return bool(res.data)
+        # Save workflow state if current_document_in_workflow_state exists
+        if state.current_document_in_workflow_state and state.current_document_in_workflow_state.template_id:
+            workflow_success = _save_workflow_state(db_client, conversation_id, state.current_document_in_workflow_state)
+            if not workflow_success:
+                print(f"[save_agent_state] Warning: Failed to save workflow state for conversation {conversation_id}")
+
+        return bool(agent_res.data)
 
     except Exception as e:
         print(f"[save_agent_state] Error: {e}")
         return False
+
+
+def _save_workflow_state(
+    db_client: SupabaseClient, 
+    conversation_id: str, 
+    current_doc: CurrentDocumentInWorkflow
+) -> bool:
+    """
+    Internal helper to save workflow state to workflows table.
+    Uses upsert pattern: updates existing record if found, otherwise creates new one.
+    """
+    try:
+        # Prepare the workflow data
+        workflow_data = {
+            "file_id": current_doc.file_id or None,
+            "template_id": current_doc.template_id or None,
+            "conversation_id": conversation_id,
+            "filled_fields": current_doc.filled_fields or {},
+            "translated_fields": current_doc.translated_fields or {},
+            "base_file_public_url": current_doc.base_file_public_url or None,
+            "template_file_public_url": current_doc.template_file_public_url or None,
+            "template_required_fields": current_doc.template_required_fields or {},
+            "extracted_fields_from_raw_ocr": current_doc.extracted_fields_from_raw_ocr or {},
+        }
+        
+        # Check if workflow already exists for this conversation
+        existing_workflow = (
+            db_client.client
+            .table("workflows")
+            .select("id")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        if existing_workflow.data:
+            # Update existing workflow record
+            workflow_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            result = (
+                db_client.client
+                .table("workflows")
+                .update(workflow_data)
+                .eq("conversation_id", conversation_id)
+                .execute()
+            )
+        else:
+            # Insert new workflow record
+            workflow_data["created_at"] = datetime.now(timezone.utc).isoformat()
+            workflow_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            result = (
+                db_client.client
+                .table("workflows")
+                .insert(workflow_data)
+                .execute()
+            )
+        
+        return bool(result.data)
+        
+    except Exception as e:
+        print(f"[_save_workflow_state] Error: {e}")
+        return False
+
+
+def load_workflow_by_conversation(
+    db_client: SupabaseClient, 
+    conversation_id: str
+) -> Optional[CurrentDocumentInWorkflow]:
+    """
+    Load the workflow state for a specific conversation ID.
+    Returns CurrentDocumentInWorkflow object or None if not found.
+    """
+    try:
+        result = (
+            db_client.client
+            .table("workflows")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        if not result.data:
+            return None
+        
+        record = result.data[0]  # Should only be one record per conversation
+        
+        # Convert database record back to CurrentDocumentInWorkflow
+        return CurrentDocumentInWorkflow(
+            file_id=record.get("file_id", ""),
+            base_file_public_url=record.get("base_file_public_url", ""),
+            template_id=record.get("template_id", ""),
+            template_file_public_url=record.get("template_file_public_url", ""),
+            template_required_fields=record.get("template_required_fields", {}),
+            extracted_fields_from_raw_ocr=record.get("extracted_fields_from_raw_ocr", {}),
+            filled_fields=record.get("filled_fields", {}),
+            translated_fields=record.get("translated_fields", {}),
+        )
+        
+    except Exception as e:
+        print(f"[load_workflow_by_conversation] Error: {e}")
+        return None
 
 
 def _agent_state_to_checkpoint_data(state: AgentState) -> Dict[str, Any]:

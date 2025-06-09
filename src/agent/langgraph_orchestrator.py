@@ -24,6 +24,7 @@ from src.db.checkpointer import (
     load_agent_state,
     save_agent_state,
 )
+from src.db.workflows_db import save_current_document_in_workflow_state
 from src.db.db_client import SupabaseClient, supabase_client
 # from src.agent.analyze_tools import get_analyze_tool
 from src.agent.functions.smart_router import SmartRouter
@@ -64,7 +65,7 @@ class LangGraphOrchestrator:
         if self.use_smart_routing:
             try:
                 self.smart_router = SmartRouter()
-                log.info("Smart router initialized successfully")
+                print("Smart router initialized successfully")
             except Exception as e:
                 log.warning(f"Failed to initialize smart router: {e}. Falling back to rule-based routing.")
                 self.use_smart_routing = False
@@ -93,22 +94,43 @@ class LangGraphOrchestrator:
 
         # ── 2. Placeholder nodes (now uncommented with debug prints) ───────
         g.add_node("find_template",             self._find_template_node)
-        g.add_node("extract_required_fields",   self._extract_required_fields_node)
-        g.add_node("translate_required_fields", self._translate_required_fields_node)
-        g.add_node("fill_template",             self._fill_template_node)
-        g.add_node("change_specific_field",     self._change_specific_field_node)
-        g.add_node("manual_fill_template",      self._manual_fill_template_node)
-        g.add_node("end_node",                  self._end_node)
+        g.add_node("extract_required_fields",   self._extract_values_node)
+        # g.add_node("translate_required_fields", self._translate_required_fields_node) 🕐
+        # g.add_node("fill_template",             self._fill_template_node) 🕐
+        # g.add_node("change_specific_field",     self._change_specific_field_node) 🕐
+        # g.add_node("manual_fill_template",      self._manual_fill_template_node) 🕐
+        # g.add_node("end_node",                  self._end_node) 🕐
+        g.add_node("ask_user_desired_langauge", self._ask_user_desired_language_node)
 
         # ── 3. Linear backbone you can already run ────────────────────────
         g.set_entry_point("load_state_graph")
-        g.add_edge("load_state_graph", "agent")
 
-        # First upload → analyse → save
-        g.add_edge("analyze_doc",      "save_state_graph")
+        # After loading state, check if we need to handle a file upload
+        g.add_conditional_edges(
+            "load_state_graph",
+            self._handle_upload,
+            {
+                "analyze_doc": "analyze_doc",  # File upload detected -> analyze first
+                "agent": "agent",              # No file upload -> normal agent flow
+            }
+        )
+
+        g.add_conditional_edges(
+            "analyze_doc",
+            self._is_document_templatable, # will implenent this if latest_user_upload is templatable by getting the latest_user_upload.is_templatable == True go to _ask_user_desired_language_node if only the state.translated_to is empty
+            {
+                "has_desired_user_desired_language": "find_template",  # File upload detected -> analyze first
+                "dont_have_desired_language": "ask_user_desired_langauge",
+                "agent": "agent", # if latest_user_upload.is_templatable == False     
+            }
+        )
+
+        g.add_edge("ask_user_desired_langauge", "save_state_graph")
 
         # Generic tool-invocation → save
         g.add_edge("tools",            "save_state_graph")
+        g.add_edge("find_template",            "agent")
+        g.add_edge("extract_required_fields",  "save_state_graph")
 
         # Always persist then finalise
         g.add_edge("save_state_graph", "finalize")
@@ -117,85 +139,239 @@ class LangGraphOrchestrator:
         # ── 4. Dynamic router after *every* agent turn ─────────────────────
         g.add_conditional_edges(
             "agent",
-            self._route_next,                # your smart router
+            self._route_next, # your smart router
             {
-                "analyze_doc":              "analyze_doc",
-                "find_template":             "find_template",
-                "extract_required_fields":   "extract_required_fields",
-                "translate":                 "translate_required_fields",
-                "fill_template":             "fill_template",
-                "manual_fill":               "manual_fill_template",
-                "change_field":              "change_specific_field",
-                "end":                       "end_node",
-                "tools":                    "tools",
-                "save":                     "save_state_graph",
+                "find_template":           "find_template",
+                "extract_required_fields":   "extract_required_fields", # if we want to get the values of extract_required_fields using the required_fields of the template
+                # "translate":                 "translate_required_fields", # if we dont have any translation to the filled_required_fields yet
+                # "fill_template":             "fill_template", # to generate a new template document_version
+                # "manual_fill":               "manual_fill_template", # when user manually filled up the filled_required_fields
+                # "change_field":              "change_specific_field", # when the user want's to change something in the filled_required_fields
+                # "end":                       "end_node", # the workflow is finished
+                "tools":                    "tools", # when we want to call any tools like: showing_buttons, showing_upload_file_button
+                "save":                     "save_state_graph", # we want to end the current workflow but set the workflow-status to in progress
+                "ask_user_desired_langauge": "ask_user_desired_langauge", # when we want to ask the user for the desired language
             },
         )
 
         return g.compile()
+    
+    #  for determining if the user upload is a document or not related
+    def _is_document_templatable(self, state: AgentState) -> str:
+        """
+        Conditional routing logic after document analysis.
+        
+        Checks if the document is templatable and if user has specified desired language.
+        Routes to:
+        - "has_desired_user_desired_language": Document is templatable AND translate_to is set
+        - "dont_have_desired_language": Document is templatable BUT translate_to is empty
+        - "agent": Document is not templatable (fallback to normal agent flow)
+        """
+        print(f"🔍 [IS_DOC_TEMPLATABLE] Checking templatable status for conversation: {state.conversation_id}")
+        
+        # Check if we have a latest upload with analysis
+        if not state.latest_upload or not state.latest_upload.analysis:
+            print(f"🔍 [IS_DOC_TEMPLATABLE] No upload or analysis found, routing to agent")
+            return "agent"
+        
+        # Get templatable status from analysis
+        is_templatable = state.latest_upload.analysis.get("is_templatable", False)
+        
+        print(f"🔍 [IS_DOC_TEMPLATABLE] Document templatable: {is_templatable}")
+
+        
+        if not is_templatable:
+            # Document is not templatable, route to normal agent flow
+            print(f"🔍 [IS_DOC_TEMPLATABLE] Document not templatable, routing to agent")
+            return "agent"
+        
+        print(f"🔍 [IS_DOC_TEMPLATABLE] Current translate_to: '{state.translate_to}'")
+        
+        # Check if user has specified desired translation language
+        if state.translate_to and state.translate_to.strip():
+            # User has specified desired language, proceed with template matching
+            print(f"🔍 [IS_DOC_TEMPLATABLE] Has desired language ({state.translate_to}), routing to find_template")
+            return "has_desired_user_desired_language"
+        else:
+            # User hasn't specified desired language, ask for it
+            print(f"🔍 [IS_DOC_TEMPLATABLE] No desired language specified, routing to ask for language")
+            return "dont_have_desired_language"
+
+    async def _ask_user_desired_language_node(self, state: AgentState) -> AgentState:
+        """
+        Ask the user what language they want to translate the document to.
+        This node is reached when we have a templatable document but no translate_to language specified.
+        """
+        print(f"🌐 [ASK_LANGUAGE] Starting for conversation: {state.conversation_id}")
+        
+        # Mark this step as done
+        if "ask_user_desired_langauge" not in state.steps_done:
+            state.steps_done.append("ask_user_desired_langauge")
+        
+        try:
+            # Get document info for context
+            doc_type = "document"
+            detected_language = "unknown"
+            
+            if state.latest_upload and state.latest_upload.analysis:
+                analysis = state.latest_upload.analysis
+                doc_type = analysis.get("doc_type", "document").replace("_", " ").title()
+                detected_language = analysis.get("detected_language", "unknown").replace("_", " ").title()
+            
+            # Create message asking for desired language
+            language_prompt = (
+                f"🌐 **Let me try to find existing template from the database**\n\n"
+                f"I've analyzed your **{doc_type}** (currently in **{detected_language}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
+                f"**To try and find the template of this document, I would need to know the desired language, What language would you like me to translate it to?**\n\n"
+                f"Please specify your desired target language, and I'll proceed with finding the appropriate template."
+            )
+            
+            language_msg = AIMessage(content=language_prompt)
+            state.messages.append(language_msg)
+            
+            # Create message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": language_prompt
+                }),
+            )
+            
+            # Set workflow status to waiting for user input
+            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
+            
+            print(f"🌐 [ASK_LANGUAGE] Language prompt sent successfully")
+            
+        except Exception as e:
+            print(f"🌐 [ASK_LANGUAGE] ERROR: {str(e)}")
+            log.exception(f"Error asking for desired language: {e}")
+            
+            error_msg = AIMessage(content="⚠️ Please specify what language you'd like me to translate your document to.")
+            state.messages.append(error_msg)
+            
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "⚠️ Please specify what language you'd like me to translate your document to."
+                }),
+            )
+            
+            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
+
+        print(f"🌐 [ASK_LANGUAGE] Completed")
+        return state
+    
+    def _handle_upload(self, state: AgentState) -> str:
+        """
+        Check if the latest message indicates a file upload.
+        If so, route to analyze_doc_node first. Otherwise, go to agent.
+        """
+        if not state.messages:
+            return "agent"
+        
+        latest_message = state.messages[-1]
+        
+        # Check if it's a HumanMessage with file upload indicator
+        if (isinstance(latest_message, HumanMessage) and 
+            latest_message.content.startswith("[FILE_UPLOADED]")):
+            print(f"🔍 [HANDLE_UPLOAD] File upload detected for conversation: {state.conversation_id}")
+            return "analyze_doc"
+        
+        # Default to agent node for regular messages
+        return "agent"
 
     def _create_system_message(self, state: AgentState) -> str:
         """Return a dynamic system prompt describing the current workflow step."""
         base = (
             "You are a specialised document-translation assistant that guides the "
-            "user through a structured flow: upload ➜ analyse ➜ extract ➜ translate "
-            "➜ template-fill.\n\n"
+            "user through a structured flow: upload ➜ analyze ➜ find template ➜ extract fields "
+            "➜ translate ➜ fill template ➜ generate final document.\n\n"
         )
 
         ctx: List[str] = []
-        if state.user_upload_id and not state.upload_analysis:
-            ctx.append("A file has been uploaded. Analyse its type, variation, and language.")
-        elif state.upload_analysis and not state.template_id:
-            ctx.append("Document analyzed. Find matching template based on analysis.")
-        elif state.template_id and not state.filled_required_fields:
-            ctx.append("Template identified. Extract required fields from the upload.")
-        elif state.filled_required_fields and state.missing_required_fields:
-            ctx.append("Some fields are missing. Ask the user for them.")
-        elif (
-            state.filled_required_fields
-            and not state.missing_required_fields
-            and not state.translated_required_fields
-        ):
-            ctx.append("All fields filled. Translate them next.")
-        elif state.translated_required_fields and not state.document_version_id:
-            ctx.append("Fields translated. Generate the final document.")
-        elif state.document_version_id:
-            ctx.append("Translated document generated. Offer download or further help.")
+        current_doc = state.current_document_in_workflow_state
+        
+        # Determine current workflow stage based on new state structure
+        if state.latest_upload and state.latest_upload.is_templatable and not state.translate_to:
+            ctx.append("Document uploaded and analyzed as templatable. Ask user for desired translation language.")
+        elif state.latest_upload and state.translate_to and not current_doc.template_id:
+            ctx.append("Target language specified. Find matching template based on document analysis.")
+        elif current_doc.template_id and not current_doc.extracted_fields_from_raw_ocr:
+            ctx.append("Template found. Extract required field values from the uploaded document.")
+        elif current_doc.extracted_fields_from_raw_ocr and not current_doc.filled_fields:
+            ctx.append("Fields extracted from document. Fill template fields with extracted values.")
+        elif current_doc.filled_fields and not current_doc.translated_fields and state.translate_to:
+            ctx.append("Fields filled. Translate them to the target language.")
+        elif current_doc.translated_fields and not state.current_document_version_id:
+            ctx.append("Fields translated. Generate the final translated document.")
+        elif state.current_document_version_id:
+            ctx.append("Final translated document generated. Workflow complete - offer download or further assistance.")
         else:
-            ctx.append("New workflow. Ask for document type and target language, then prompt for upload.")
+            if not state.latest_upload:
+                ctx.append("Ready to start new document translation workflow.")
+            else:
+                ctx.append("Introduce yourself and explain the current step in the workflow.")
 
+        # Add contextual information
         if state.translate_to:
             ctx.append(f"Target language: {state.translate_to}.")
-        if state.upload_analysis:
-            analysis = state.upload_analysis
-            ctx.append(f"Document analyzed: {analysis.get('doc_type', 'unknown')} ({analysis.get('variation', 'unknown')}) in {analysis.get('detected_language', 'unknown')}.")
-        if state.template_required_fields:
-            keys = list(state.template_required_fields)[:5]
-            more = "..." if len(state.template_required_fields) > 5 else ""
-            ctx.append(f"Template needs: {', '.join(keys)}{more}.")
-        if state.steps_done:
-            ctx.append(f"Completed: {', '.join(state.steps_done)}.")
+        
+        if state.latest_upload and state.latest_upload.analysis and state.latest_upload.is_templatable:
+            analysis = state.latest_upload.analysis
+            doc_type = analysis.get('doc_type', 'unknown')
+            variation = analysis.get('variation', 'unknown')
+            detected_lang = analysis.get('detected_language', 'unknown')
+            ctx.append(f"Document analyzed: {doc_type} ({variation}) in {detected_lang}.")
+        
+        if current_doc.template_required_fields:
+            keys = list(current_doc.template_required_fields.keys())[:5]
+            more = "..." if len(current_doc.template_required_fields) > 5 else ""
+            ctx.append(f"Template requires: {', '.join(keys)}{more}.")
+        
+        if current_doc.filled_fields:
+            filled_keys = list(current_doc.filled_fields.keys())[:3]
+            more = "..." if len(current_doc.filled_fields) > 3 else ""
+            ctx.append(f"Fields filled: {', '.join(filled_keys)}{more}.")
+        
+        # if state.steps_done:
+        #     ctx.append(f"Completed steps: {', '.join(state.steps_done)}.")
+        
+        # if state.workflow_status != WorkflowStatus.PENDING:
+        #     ctx.append(f"Workflow status: {state.workflow_status.value}.")
 
         guidelines = (
             "GUIDELINES:\n"
-            "- Use tool calls for UI elements (buttons, forms, uploads).\n"
+            "- Use tool calls for UI elements (buttons, forms, uploads, file displays).\n"
             "- You can call MULTIPLE tools in a single response when needed.\n"
             "- For example: call update_agent_state AND show_buttons together.\n"
             "- Never repeat steps already in steps_done.\n"
-            "- Provide clear, professional updates.\n"
-            "- Reason internally; do not expose chain-of-thought.\n"
+            "- The smart router will determine the next workflow node based on current state and conversation.\n"
+            "- Focus on clear communication about the current step and what the user needs to do.\n"
+            "- Handle user corrections and field modifications gracefully.\n"
+            "- Provide professional updates about workflow progress.\n"
             f"- ALWAYS include conversation_id='{state.conversation_id}' when calling tools that support it.\n"
         )
 
+        # Updated tool hint reflecting new workflow nodes
         tool_hint = (
-            "\n\nIf the user message gives you ANY new detail about the workflow "
-            "(translate_to, translate_from) **call the tool "
-            "`update_agent_state`** with only the keys that changed (the only thing that update_agent_state should translate_to and translate_from). "
-            "You can then ALSO call other tools like show_buttons or show_upload_button "
-            "in the same response to provide the next UI interaction. "
+            "\n\nIf the user provides ANY new workflow information "
+            "(translate_to, field corrections, language preferences), **call the tool "
+            "`update_agent_state`** with only the keys that changed. "
+            "The main updatable fields are: translate_to, context flags, and workflow status. "
+            "You can then ALSO call other tools like show_buttons, show_upload_button, "
+            "or show_document_preview in the same response to provide the next UI interaction. "
             f"Remember to always pass conversation_id='{state.conversation_id}' to tools. "
-            "After all tool calls, send your normal assistant reply."
+            "After all tool calls, send your normal assistant reply explaining the current step."
         )
+
+        # Add current workflow node context if available
+        if state.current_pending_node:
+            ctx.append(f"Pending action: {state.current_pending_node}.")
 
         return (
             base
@@ -211,24 +387,79 @@ class LangGraphOrchestrator:
         if "agent" not in state.steps_done:
             state.steps_done.append("agent")
 
-        # Build a SystemMessage + existing chat history so far
-        sys_msg = SystemMessage(content=self._create_system_message(state))
-        llm_messages: List[BaseMessage] = [sys_msg, *state.messages]
+        # 1) Collect only non-tool, non-empty messages
+        clean_messages = []
+        for msg in state.messages:
+            # If it's an AIMessage and has tool_calls present
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                # Case A: Both content and tool_calls are non‐empty
+                if msg.content and msg.content.strip():
+                    
+                    # 1) Tool‐only message (tool_calls must be a list)
+                    tool_msg = AIMessage(
+                        content="",  # explicitly empty string
+                        tool_calls=list(msg.tool_calls),  # ensure this is a list
+                        additional_kwargs=msg.additional_kwargs,
+                        response_metadata=msg.response_metadata
+                    )
+                    clean_messages.append(tool_msg)
 
-        # Invoke the LLM (which may emit one or more tool_calls)
+                else:
+                    # continue
+                    # Case B: No content, only tool_calls (still wrap in list)
+                    tool_msg = AIMessage(
+                        content="",
+                        tool_calls=list(msg.tool_calls),  # wrap in list
+                        additional_kwargs=msg.additional_kwargs,
+                        response_metadata=msg.response_metadata
+                    )
+                    clean_messages.append(tool_msg)
+
+                continue
+            elif isinstance(msg, AIMessage) and msg.content.strip() == "":
+                # If it's an AIMessage with empty content, skip it
+                continue
+
+            # Everything else (e.g., HumanMessage or AIMessage without tool_calls)
+            clean_messages.append(msg)
+
+        for msg in clean_messages:
+            if msg.content.strip() == "":
+                print(f"🙏🏻 MSG: ", msg)
+
+        # 2) Build the SystemMessage with the current workflow context
+        sys_msg = SystemMessage(content=self._create_system_message(state))
+
+        # 3) Prepend the system prompt to the clean chat history
+        llm_messages: List[BaseMessage] = [sys_msg, *clean_messages]
+
+        # 4) Invoke the LLM (which may emit one or more tool_calls)
         response: AIMessage = await self.llm_with_core_tools.ainvoke(llm_messages)
 
-        # If LLM produced any tool_calls named "update_agent_state", strip out conversation_id
-        # and apply the remaining patch keys to our in-memory state.
+        # 5) If the LLM produced any "update_agent_state" tool_calls, apply them
         for tc in getattr(response, "tool_calls", []):
-            if tc["name"] == "update_agent_state":
+            if tc["name"] == "update_translate_to":
                 patch = {k: v for k, v in tc["args"].items() if k != "conversation_id"}
                 self._apply_state_patch(state, patch)
+
+        # 6) Append the LLM's response to the state
+
+        print("response", response)
+        
+        # Create message in database
+        if response.content.strip() != "":
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({"text": response.content}),
+            )
+
 
         state.messages.append(response)
         state.workflow_status = WorkflowStatus.IN_PROGRESS
         return state
-
+    
     async def _tool_node(self, state: AgentState) -> AgentState:
         # Mark that we're running tool-invocation
         if "tools" not in state.steps_done:
@@ -273,7 +504,7 @@ class LangGraphOrchestrator:
         print(f"🔍 [ANALYZE_DOC] Starting for conversation: {state.conversation_id}")
         
         # Insert a message that we're analyzing the document
-        analysis_msg = AIMessage(content="🔍 Analyzing the uploaded document to determine its type and language...")
+        analysis_msg = AIMessage(content="🔍 Analyzing the uploaded file")
         state.messages.append(analysis_msg)
         
         # Create message in database too
@@ -282,7 +513,7 @@ class LangGraphOrchestrator:
             sender="assistant",
             kind="text",
             body=json.dumps({
-                "text": "🔍 Analyzing the uploaded document to determine its type and language..."
+                "text": "🔍 Analyzing...."
             }),
         )
         # Mark this step as done
@@ -293,41 +524,63 @@ class LangGraphOrchestrator:
 
             # import analyze_tool result
             from agent.functions.analyze_doc_node_helper import analyze_upload
+
+            # Check if we have a valid upload with public_url
+            if not state.latest_upload:
+                raise ValueError("No normal upload found for document analysis")
             
-            if state.user_upload_public_url == "" or state.user_upload_public_url is None:
+            if not state.latest_upload.public_url:
+                raise ValueError("Missing required upload URL for document analysis")
+            
+            if state.latest_upload.public_url == "" or state.latest_upload.public_url is None:
                 raise ValueError("Missing required upload URL for document analysis")
 
             analysis_result = await analyze_upload(
-                file_id=state.user_upload_id,
-                public_url=state.user_upload_public_url
+                file_id=state.latest_upload.file_id,
+                public_url=state.latest_upload.public_url
             )
             
             # Store the analysis in state
-            state.upload_analysis = {**analysis_result}
+            state.latest_upload.analysis = {**analysis_result}
             
             print(f"🔍 [ANALYZE_DOC] Stored analysis in state")
             
-            # Create a user-friendly summary
-            doc_type = analysis_result.get("doc_type", "unknown")
-            variation = analysis_result.get("variation", "standard")
-            language = analysis_result.get("detected_language", "unknown")
-
-            summary_parts = [
-                f"✅ **Document Analysis Complete**",
-                f"• **Type**: {doc_type.replace('_', ' ').title()}\n",
-                f"• **Variation**: {variation.replace('_', ' ').title()}\n",
-                f"• **Language**: {language.replace('_', ' ').title()}\n",
-            ]
+            # Check if document is templatable and move to appropriate list
+            is_templatable = analysis_result.get("is_templatable", False)
+            state.latest_upload.is_templatable = is_templatable
             
-            if analysis_result.get("page_count"):
-                summary_parts.append(f"• **Pages**: {analysis_result['page_count']}\n")
-            if analysis_result.get("page_size"):
-                summary_parts.append(f"• **Size**: {analysis_result['page_size']}\n")
+            # Create response based on templatable status
+            if is_templatable:
+                # Create detailed summary for templatable documents
+                doc_type = analysis_result.get("doc_type", "unknown")
+                variation = analysis_result.get("variation", "standard")
+                language = analysis_result.get("detected_language", "unknown")
+                doc_classification = analysis_result.get("doc_classification", "other")
 
-            upload_summary = analysis_result.get("content_summary", "")
-            summary_parts.append(f"• **Summary**: {upload_summary}\n")
+                summary_parts = [
+                    f"✅ **Document Analysis Complete**",
+                    f"• **Type**: {doc_type.replace('_', ' ').title()}\n",
+                    f"• **Classification**: {doc_classification.replace('_', ' ').title()}\n",
+                    f"• **Variation**: {variation.replace('_', ' ').title()}\n",
+                    f"• **Language**: {language.replace('_', ' ').title()}\n",
+                    f"• **Templatable**: {'Yes' if is_templatable else 'No'}\n",
+                ]
+                
+                if analysis_result.get("page_count"):
+                    summary_parts.append(f"• **Pages**: {analysis_result['page_count']}\n")
+                if analysis_result.get("page_size"):
+                    summary_parts.append(f"• **Size**: {analysis_result['page_size']}\n")
+
+                upload_summary = analysis_result.get("content_summary", "")
+                summary_parts.append(f"• **Summary**: {upload_summary}\n")
+                
+                response_text = "\n".join(summary_parts)
+            else:
+                # Simple response for non-templatable documents
+                upload_summary = analysis_result.get("content_summary", "Document analyzed")
+                response_text = f"{upload_summary}\n\nThis document appears to not be related to document translation or template processing. So I won't proceed to the document translation"
             
-            summary_msg = AIMessage(content="\n".join(summary_parts))
+            summary_msg = AIMessage(content=response_text)
             state.messages.append(summary_msg)
             
             # Create message in database
@@ -336,7 +589,7 @@ class LangGraphOrchestrator:
                 sender="assistant",
                 kind="text",
                 body=json.dumps({
-                    "text": "\n".join(summary_parts)
+                    "text": response_text
                 }),
             )
 
@@ -345,20 +598,8 @@ class LangGraphOrchestrator:
             print(f"🔍 [ANALYZE_DOC] Analysis completed successfully")
             
         except Exception as e:
-            print(f"🔍 [ANALYZE_DOC] ERROR: {str(e)}")
-            log.exception(f"Error analyzing document: {e}")
-            
-            # Store minimal analysis on error
-            state.upload_analysis = {
-                "file_id": state.user_upload_id,
-                "mime_type": "unknown",
-                "doc_type": "unknown",
-                "variation": "standard", 
-                "detected_language": "unknown",
-                "confidence": 0.0
-                }
-            
-            error_msg = AIMessage(content="⚠️ Unable to fully analyze the document. Please verify the document type manually.")
+            print(f"❌ [ANALYZE_DOC] Error during analysis: {str(e)}")
+            error_msg = AIMessage(content=f"❌ Error analyzing document: {str(e)}")
             state.messages.append(error_msg)
             
             # Create error message in database
@@ -367,150 +608,378 @@ class LangGraphOrchestrator:
                 sender="assistant",
                 kind="text",
                 body=json.dumps({
-                    "text": "⚠️ Unable to fully analyze the document. Please verify the document type manually."
+                    "text": f"❌ Error analyzing document: {str(e)}"
                 }),
             )
-
-        print(f"🔍 [ANALYZE_DOC] Completed")
+            
+            state.workflow_status = WorkflowStatus.FAILED
+        
         return state
-
-
-
-    # ── PLACEHOLDER NODES (now uncommented with debug prints) ──────────────
 
     async def _find_template_node(self, state: AgentState) -> AgentState:
-        """Find matching template based on document analysis."""
-        print("🔍 [DEBUG] Executing _find_template_node")
-        log.info("find_template_node executed for conversation %s", state.conversation_id)
+            """
+            Use the find_template_match tool to find the best matching template.
+            This calls the template matching tool directly in a deterministic way.
+            """
+            print(f"🔍 [FIND_TEMPLATE] Starting for conversation: {state.conversation_id}")
         
-        if "find_template" not in state.steps_done:
+            # Insert a message that we're finding a template
+            template_msg = AIMessage(content="🔍 Finding the best matching template for your document...")
+            state.messages.append(template_msg)
+        
+            # Create message in database too
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "🔍 Finding the best matching template for your document..."
+                }),
+            )
+        
+            # Mark this step as done
             state.steps_done.append("find_template")
-        
-        # TODO: Implement template finding logic
-        # For now, just add a placeholder message
-        msg = AIMessage(content="🔍 Finding matching template based on document analysis...")
-        state.messages.append(msg)
-        
-        return state
+            
+            try:
+                # Hardcoded template ID
+                template_id = "9fc0c5fc-2885-4d58-ba0f-4711244eb7df"
+                
+                # Get template data from Supabase
+                print(f"🔍 [FIND_TEMPLATE] Fetching template data for ID: {template_id}")
+                
+                template_response = self.db_client.client.table("templates").select(
+                    "id, doc_type, variation, file_url, info_json"
+                ).eq("id", template_id).single().execute()
+                
+                if not template_response.data:
+                    raise Exception(f"Template with ID {template_id} not found")
+                
+                template_data = template_response.data
+                
+                # Extract required fields from info_json
+                info_json = template_data.get("info_json", {})
+                template_required_fields = info_json.get("required_fields", {})
+                
+                print(f"🔍 [FIND_TEMPLATE] Template found - Type: {template_data['doc_type']}, Variation: {template_data['variation']}")
+                print(f"🔍 [FIND_TEMPLATE] Required fields: {list(template_required_fields.keys())}")
+                
+                # Find the latest user upload where templatable is true
+                latest_templatable_upload = None
+                for upload in reversed(state.user_uploads):  # Check from most recent
+                    if upload.is_templatable:
+                        latest_templatable_upload = upload
+                        break
+                
+                if not latest_templatable_upload:
+                    raise Exception("No templatable upload found in user uploads")
+                
+                print(f"🔍 [FIND_TEMPLATE] Using upload: {latest_templatable_upload.filename}")
+                
+                # Initialize filled_fields and translated_fields with empty values for each required field
+                filled_fields = {field_key: "" for field_key in template_required_fields.keys()}
+                translated_fields = {field_key: "" for field_key in template_required_fields.keys()}
+                
+                # Update CurrentDocumentInWorkflow state
+                state.current_document_in_workflow_state.file_id = latest_templatable_upload.file_id
+                state.current_document_in_workflow_state.base_file_public_url = latest_templatable_upload.public_url
+                state.current_document_in_workflow_state.template_id = template_id
+                state.current_document_in_workflow_state.template_file_public_url = template_data["file_url"]
+                state.current_document_in_workflow_state.template_required_fields = template_required_fields
+                state.current_document_in_workflow_state.filled_fields = filled_fields
+                state.current_document_in_workflow_state.translated_fields = translated_fields
+                
+                # Create success message
+                success_message = (
+                    f"✅ Found matching template!\n\n"
+                    f"📋 Document Type: {template_data['doc_type']}\n\n"
+                    f"🔧 Variation: {template_data['variation']}\n\n"
+                    f"📝 Required Fields: {len(template_required_fields)} fields to extract\n\n"
+                    f"📄 Processing: {latest_templatable_upload.filename}"
+                )
+                
+                success_msg = AIMessage(content=success_message)
+                state.messages.append(success_msg)
+                
+                # Create success message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": success_message
+                    }),
+                )
 
-    async def _extract_required_fields_node(self, state: AgentState) -> AgentState:
-        """Extract required fields from the uploaded document."""
-        print("📋 [DEBUG] Executing _extract_required_fields_node")
-        log.info("extract_required_fields_node executed for conversation %s", state.conversation_id)
-        
-        if "extract_required_fields" not in state.steps_done:
-            state.steps_done.append("extract_required_fields")
-        
-        # TODO: Implement field extraction logic
-        msg = AIMessage(content="📋 Extracting required fields from the document...")
-        state.messages.append(msg)
-        
-        return state
+                save_agent_state(self.db_client, state.conversation_id, state)
+                save_current_document_in_workflow_state(self.db_client, state.conversation_id, state)
+                
+                print(f"🔍 [FIND_TEMPLATE] Successfully configured document workflow")
+                print(f"🔍 [FIND_TEMPLATE] Initialized {len(filled_fields)} filled_fields and {len(translated_fields)} translated_fields")
+                
+            except Exception as e:
+                print(f"🔍 [FIND_TEMPLATE] ERROR: {str(e)}")
+                log.exception(f"Error finding template match: {e}")
+            
+                # Store empty template info on error
+                state.current_document_in_workflow_state.template_id = ""
+                state.current_document_in_workflow_state.template_required_fields = {}
+                state.current_document_in_workflow_state.filled_fields = {}
+                state.current_document_in_workflow_state.translated_fields = {}
+            
+                error_msg = AIMessage(content="⚠️ Unable to find a matching template. Manual processing may be required.")
+                state.messages.append(error_msg)
+            
+                # Create error message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": "⚠️ Unable to find a matching template. Manual processing may be required."
+                    }),
+                )
+            
+                state.workflow_status = WorkflowStatus.FAILED
+                
+            print(f"🔍 [FIND_TEMPLATE] Completed")
+            return state
 
+    async def _extract_values_node(self, state: AgentState) -> AgentState:
+            """
+            Extract values from the document using OCR based on template requirements.
+            This calls the extract_values_from_document helper function directly.
+            """
+            print(f"📄 [EXTRACT_VALUES] Starting for conversation: {state.conversation_id}")
+            
+            # Insert a message that we're extracting values from the document
+            extraction_msg = AIMessage(content="📄 Extracting values from the document using OCR...")
+            state.messages.append(extraction_msg)
+            
+            # Create message in database too
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "📄 Extracting values from the document using OCR..."
+                }),
+            )
+            
+            # Mark this step as done
+            state.steps_done.append("extract_values")
 
-    async def _translate_required_fields_node(self, state: AgentState) -> AgentState:
-        """Translate the required fields to target language."""
-        print("🌐 [DEBUG] Executing _translate_required_fields_node")
-        log.info("translate_required_fields_node executed for conversation %s", state.conversation_id)
-        
-        if "translate_required_fields" not in state.steps_done:
-            state.steps_done.append("translate_required_fields")
-        
-        # TODO: Implement translation logic
-        msg = AIMessage(content="🌐 Translating required fields to target language...")
-        state.messages.append(msg)
-        
-        return state
+            try:
+                print(f"📄 [EXTRACT_VALUES] Calling extract values helper directly...")
 
-    async def _fill_template_node(self, state: AgentState) -> AgentState:
-        """Fill the template with translated fields."""
-        print("📝 [DEBUG] Executing _fill_template_node")
-        log.info("fill_template_node executed for conversation %s", state.conversation_id)
-        
-        if "fill_template" not in state.steps_done:
-            state.steps_done.append("fill_template")
-        
-        # TODO: Implement template filling logic
-        msg = AIMessage(content="📝 Filling template with translated information...")
-        state.messages.append(msg)
-        
-        return state
+                # Import the extract values helper
+                from agent.functions.extract_values_node_helper import extract_values_from_document
 
-    async def _change_specific_field_node(self, state: AgentState) -> AgentState:
-        """Change a specific field in the document."""
-        print("✏️ [DEBUG] Executing _change_specific_field_node")
-        log.info("change_specific_field_node executed for conversation %s", state.conversation_id)
-        
-        if "change_specific_field" not in state.steps_done:
-            state.steps_done.append("change_specific_field")
-        
-        # TODO: Implement field changing logic
-        msg = AIMessage(content="✏️ Changing specific field in the document...")
-        state.messages.append(msg)
-        
-        return state
+                # Validate that we have the required data in state
+                if not state.current_document_in_workflow_state.template_id:
+                    raise ValueError("No template ID found in current document workflow state")
+                
+                if not state.current_document_in_workflow_state.base_file_public_url:
+                    raise ValueError("No base file public URL found in current document workflow state")
+                
+                template_id = state.current_document_in_workflow_state.template_id
+                base_file_url = state.current_document_in_workflow_state.base_file_public_url
+                
+                print(f"📄 [EXTRACT_VALUES] Using template_id: {template_id}")
+                print(f"📄 [EXTRACT_VALUES] Using base_file_url: {base_file_url}")
 
-    async def _manual_fill_template_node(self, state: AgentState) -> AgentState:
-        """Manually fill template with user-provided information."""
-        print("✍️ [DEBUG] Executing _manual_fill_template_node")
-        log.info("manual_fill_template_node executed for conversation %s", state.conversation_id)
-        
-        if "manual_fill_template" not in state.steps_done:
-            state.steps_done.append("manual_fill_template")
-        
-        # TODO: Implement manual template filling logic
-        msg = AIMessage(content="✍️ Manually filling template with user information...")
-        state.messages.append(msg)
-        
-        return state
+                # Call the extraction function
+                extraction_result = await extract_values_from_document(
+                    template_id=template_id,
+                    base_file_public_url=base_file_url
+                )
+                
+                # Store the extracted fields in state
+                if extraction_result.get("success", False):
+                    state.current_document_in_workflow_state.extracted_fields_from_raw_ocr = extraction_result.get("extracted_ocr", {})
+                    
+                    # Populate filled_fields with extracted values, adding [UNEDITED] tag
+                    extracted_fields = state.current_document_in_workflow_state.extracted_fields_from_raw_ocr
+                    for field_key, field_value in extracted_fields.items():
+                        # Add [UNEDITED] tag to indicate this value hasn't been manually reviewed
+                        state.current_document_in_workflow_state.filled_fields[field_key] = f"{field_value} [UNEDITED]"
+                    
+                    print(f"📄 [EXTRACT_VALUES] Successfully extracted {len(extracted_fields)} fields")
+                    print(f"📄 [EXTRACT_VALUES] Populated filled_fields with {len(state.current_document_in_workflow_state.filled_fields)} fields")
+                    
+                    # Create detailed summary of extraction results
+                    missing_fields = extraction_result.get("missing_value_keys", {})
+                    
+                    doc_type = extraction_result.get("doc_type", "unknown")
+                    variation = extraction_result.get("variation", "standard")
+                    
+                    summary_parts = [
+                        f"✅ **Value Extraction Complete**\n",
+                        f"• **Document Type**: {doc_type.replace('_', ' ').title()}\n",
+                        f"• **Variation**: {variation.replace('_', ' ').title()}\n\n",
+                        f"• **Fields Extracted**: {len(extracted_fields)} out of {len(extracted_fields) + len(missing_fields)} total fields\n\n",
+                    ]
+                    
+                    # Show extracted fields summary
+                    if extracted_fields:
+                        summary_parts.append("\n\n**📋 Successfully Extracted Fields:**\n\n")
+                        for field_key, field_value in extracted_fields.items():
+                            # Clean up the field key for display
+                            clean_key = field_key.strip('{}')
+                            # Truncate long values for display
+                            display_value = str(field_value)[:50] + "..." if len(str(field_value)) > 50 else str(field_value)
+                            summary_parts.append(f"• **{clean_key}**: {display_value}\n\n")
+                    
+                    # Show missing fields if any
+                    if missing_fields:
+                        summary_parts.append(f"\n\n**⚠️ Missing Fields ({len(missing_fields)}):**\n\n")
+                        for field_key, field_description in missing_fields.items():
+                            clean_key = field_key.strip('{}')
+                            summary_parts.append(f"• **{clean_key}**: {field_description}\n\n")
+                        summary_parts.append("\n\n*These fields were not found in the document or were unclear during OCR processing. Please manually add them*\n\n")
+                    
+                    # Join all parts and remove any trailing newlines, then ensure single trailing newline
+                    response_text = "".join(summary_parts).rstrip() + "\n\n"
 
-    async def _end_node(self, state: AgentState) -> AgentState:
-        """End the workflow process."""
-        print("🏁 [DEBUG] Executing _end_node")
-        log.info("end_node executed for conversation %s", state.conversation_id)
-        
-        if "end" not in state.steps_done:
-            state.steps_done.append("end")
-        
-        # TODO: Implement workflow completion logic
-        msg = AIMessage(content="🏁 Workflow completed successfully!")
-        state.messages.append(msg)
-        
-        state.workflow_status = WorkflowStatus.COMPLETED
-        return state
+                    # Save the agent state with the extracted fields
+                    save_agent_state(self.db_client, state.conversation_id, state)
+                    
+                    # Set workflow status to waiting for confirmation
+                    state.workflow_status = WorkflowStatus.IN_PROGRESS
+                    
+                else:
+                    # Handle extraction failure
+                    error_msg = extraction_result.get("error", "Unknown extraction error")
+                    response_text = f"❌ **Value Extraction Failed**\n\n\nError: {error_msg}"
+                    
+                    # If there's a raw response, include it for debugging
+                    if extraction_result.get("raw_response"):
+                        response_text += f"\n\n*Debug Info*: {extraction_result['raw_response'][:200]}..."
+                    
+                    state.current_document_in_workflow_state.extracted_fields_from_raw_ocr = {}
+                    state.current_document_in_workflow_state.filled_fields = {}
+                    state.workflow_status = WorkflowStatus.FAILED
+                
+                # Create the response message
+                summary_msg = AIMessage(content=response_text)
+                state.messages.append(summary_msg)
+                
+                # Create message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": response_text
+                    }),
+                )
 
-    # ── END PLACEHOLDER NODES ──────────────────────────────────────────────
+                caution_msg_text = "Please double check the values extracted from the document using our interactive document forms editor at the upper right. "
+                caution_ai_msg = AIMessage(content=caution_msg_text)
+                state.messages.append(caution_ai_msg)
+
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": caution_msg_text
+                    }),
+                )
+                
+                print(f"📄 [EXTRACT_VALUES] Extraction process completed")
+                
+            except Exception as e:
+                print(f"❌ [EXTRACT_VALUES] Error during extraction: {str(e)}")
+                error_msg = AIMessage(content=f"❌ Error extracting values from document: {str(e)}")
+                state.messages.append(error_msg)
+                
+                # Create error message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": f"❌ Error extracting values from document: {str(e)}"
+                    }),
+                )
+                
+                # Clear extracted fields on error
+                state.current_document_in_workflow_state.extracted_fields_from_raw_ocr = {}
+                state.current_document_in_workflow_state.filled_fields = {}
+                state.workflow_status = WorkflowStatus.FAILED
+            
+            return state
+
     def _merge_states(self, current_state: AgentState, db_state: AgentState) -> AgentState:
         """
         Merge current state (with new data) into persisted state (from DB).
         Priority: current_state values override db_state when current has non-empty values.
         """
-
-        print('states in merge_state', current_state.user_upload_public_url)
+        print('merging states - current uploads:', len(current_state.user_uploads))
+    
         # Start with db_state as base
         merged = db_state.model_copy(deep=True)
-        
+    
         # Merge messages (only new ones)
         delta = current_state.messages[len(db_state.messages):]
         merged.messages.extend(delta)
         
+        # Merge conversation_history (only new ones)
+        history_delta = current_state.conversation_history[len(db_state.conversation_history):]
+        merged.conversation_history.extend(history_delta)
+    
         # Merge context
         merged.context.update(current_state.context)
-        
-        # Preserve file upload info from current state if it's newer/different
-        if current_state.user_upload_id and current_state.user_upload_id != merged.user_upload_id:
-            merged.user_upload_id = current_state.user_upload_id
-        if current_state.user_upload_public_url and current_state.user_upload_public_url != merged.user_upload_public_url:
-            merged.user_upload_public_url = current_state.user_upload_public_url
-        if current_state.upload_analysis and current_state.upload_analysis != merged.upload_analysis:
-            merged.upload_analysis = current_state.upload_analysis
-        
-        # Preserve other potentially new fields from current state
+    
+        # Merge user uploads (append new ones)
+        if current_state.user_uploads:
+            # Get the number of uploads already in db_state to find new ones
+            existing_count = len(merged.user_uploads)
+            new_uploads = current_state.user_uploads[existing_count:]
+            merged.user_uploads.extend(new_uploads)
+    
+        # Update translate_to if provided in current state
         if current_state.translate_to and current_state.translate_to != merged.translate_to:
             merged.translate_to = current_state.translate_to
-        if current_state.translate_from and current_state.translate_from != merged.translate_from:
-            merged.translate_from = current_state.translate_from
-        
+    
+        # Merge current_document_in_workflow_state
+        if current_state.current_document_in_workflow_state:
+            current_doc = current_state.current_document_in_workflow_state
+            merged_doc = merged.current_document_in_workflow_state
+            
+            # Update individual fields if they have values in current state
+            if current_doc.file_id and current_doc.file_id != merged_doc.file_id:
+                merged_doc.file_id = current_doc.file_id
+            if current_doc.base_file_public_url and current_doc.base_file_public_url != merged_doc.base_file_public_url:
+                merged_doc.base_file_public_url = current_doc.base_file_public_url
+            if current_doc.template_id and current_doc.template_id != merged_doc.template_id:
+                merged_doc.template_id = current_doc.template_id
+            if current_doc.template_file_public_url and current_doc.template_file_public_url != merged_doc.template_file_public_url:
+                merged_doc.template_file_public_url = current_doc.template_file_public_url
+            
+            # Merge dictionaries
+            merged_doc.template_required_fields.update(current_doc.template_required_fields)
+            merged_doc.extracted_fields_from_raw_ocr.update(current_doc.extracted_fields_from_raw_ocr)
+            merged_doc.filled_fields.update(current_doc.filled_fields)
+            merged_doc.translated_fields.update(current_doc.translated_fields)
+    
+        # Update current_document_version_id if provided
+        if current_state.current_document_version_id and current_state.current_document_version_id != merged.current_document_version_id:
+            merged.current_document_version_id = current_state.current_document_version_id
+    
+        # Update current_pending_node if provided
+        if current_state.current_pending_node and current_state.current_pending_node != merged.current_pending_node:
+            merged.current_pending_node = current_state.current_pending_node
+    
+        # Merge steps_done (append new ones, avoiding duplicates)
+        for step in current_state.steps_done:
+            if step not in merged.steps_done:
+                merged.steps_done.append(step)
+    
+        # Update workflow_status if it has changed
+        if current_state.workflow_status != merged.workflow_status:
+            merged.workflow_status = current_state.workflow_status
+    
         return merged
 
     async def _load_state_graph(self, state: AgentState) -> AgentState:
@@ -545,10 +1014,6 @@ class LangGraphOrchestrator:
             except Exception as e:
                 log.warning(f"Smart router failed for conversation {state.conversation_id}: {e}. Using fallback.")
                 # Continue to fallback routing below
-        
-        # Fallback to original rule-based routing
-        log.info(f"Using rule-based routing for conversation {state.conversation_id}")
-        return self._rule_based_routing(state)
 
     def _extract_final_response(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """Pick the most suitable message to surface to the UI."""
@@ -643,7 +1108,6 @@ class LangGraphOrchestrator:
             "steps_completed": len(final.steps_done),
         }
 
-    # And update your process_user_file method:
     async def process_user_file(
         self, conversation_id: str, file_info: Dict[str, Any], context: Dict[str, Any] | None = None
     ) -> Dict[str, Any]:
@@ -667,14 +1131,12 @@ class LangGraphOrchestrator:
         
         # 3. Append the file info as a HumanMessage
         state.messages.append(HumanMessage(content=file_message))
+        state.user_uploads.append(file_info)
 
         # 4. Merge any additional context
         if context:
             state.context.update(context)
         
-        # 5. Store file info directly in state
-        state.user_upload_id = file_info.get("file_id", "")
-        state.user_upload_public_url = file_info.get("public_url", "")
         
         # Also add file info to context for tools
         state.context.update({
@@ -683,7 +1145,7 @@ class LangGraphOrchestrator:
             "public_url": file_info.get("public_url"),
         })
 
-        # 6. Run the state-graph
+        # 5. Run the state-graph
         raw = await self.graph.ainvoke(state, RunnableConfig())
         final: AgentState = (
             raw
@@ -715,37 +1177,37 @@ class LangGraphOrchestrator:
             "steps_completed": len(final.steps_done),
         }
 
-    def get_workflow_status(self, conversation_id: str) -> Optional[str]:
-        state = load_agent_state(self.db_client, conversation_id)
-        return state.workflow_status.value if state else None
-
-    def clear_conversation_state(self, conversation_id: str) -> bool:
-        try:
-            (
-                self.db_client.client.table("agent_state")
-                .delete()
-                .eq("conversation_id", conversation_id)
-                .execute()
-            )
-            return True
-        except Exception:
-            log.exception("clear_conversation_state failed")
-            return False
-
-    def _state_summary(self, s: AgentState) -> str:
-        """Return a terse, 1-line summary for the system prompt."""
+    def _state_summary(self, state: AgentState) -> str:
+        """Generate a concise state summary for the system message."""
+        current_doc = state.current_document_in_workflow_state
+        
         parts = []
-        if s.translate_to:
-            parts.append(f"translate_to={s.translate_to}")
-        if s.translate_from:
-            parts.append(f"translate_from={s.translate_from}")
-        if s.template_id:
-            parts.append(f"template_id={s.template_id}")
-        if s.user_upload_id:
-            parts.append("file_uploaded✔")
-        if s.missing_required_fields:
-            parts.append(f"missing={list(s.missing_required_fields)[:3]}…")
-        return ", ".join(parts) or "empty"
+        parts.append(f"Status: {state.workflow_status.value}")
+        
+        if state.latest_upload:
+            parts.append("Has upload")
+            if state.latest_upload.is_templatable:
+                parts.append("templatable")
+        
+        if state.translate_to:
+            parts.append(f"→ {state.translate_to}")
+        
+        if current_doc.template_id:
+            parts.append("template found")
+        
+        if current_doc.extracted_fields_from_raw_ocr:
+            parts.append("fields extracted")
+        
+        if current_doc.filled_fields:
+            parts.append("fields filled")
+        
+        if current_doc.translated_fields:
+            parts.append("fields translated")
+        
+        if state.current_document_version_id:
+            parts.append("document ready")
+        
+        return " | ".join(parts)
 
     def _apply_state_patch(self, state: AgentState, patch: Dict[str, Any]) -> None:
         """
@@ -755,11 +1217,6 @@ class LangGraphOrchestrator:
         for key, val in patch.items():
             if not hasattr(state, key):
                 # Silently skip anything not on AgentState
-                continue
-
-            # Simple type validation for key fields
-            if key in ("user_upload_id", "user_upload_public_url") and not isinstance(val, str):
-                log.warning("%s must be str – got %s", key, type(val))
                 continue
 
             # Default behaviour: let Pydantic handle the assignment
