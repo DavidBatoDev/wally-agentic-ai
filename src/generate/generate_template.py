@@ -37,6 +37,7 @@ class Position(BaseModel):
 
 class TextMatch(BaseModel):
     key: str
+    label: str  # New field for human-readable label
     value: str
     position: Position
     font: FontInfo
@@ -52,7 +53,7 @@ class TextMatch(BaseModel):
     bbox_center: Dict[str, float]
 
 class TemplateExtractionResponse(BaseModel):
-    required_fields: Dict[str, str]
+    required_fields: Dict[str, str]  # Now uses readable labels as keys
     fillable_text_info: List[TextMatch]
 
 # Helper functions
@@ -92,7 +93,7 @@ def extract_context(text: str, match_start: int, match_end: int, context_length:
     
     return context_before, context_after
 
-def search_template_keys_in_pdf(pdf_bytes: bytes) -> List[TextMatch]:
+def search_template_keys_in_pdf(pdf_bytes: bytes, field_labels: Dict[str, str]) -> List[TextMatch]:
     """Search for template keys in format {key} in PDF and return detailed information about matches"""
     matches = []
     
@@ -167,9 +168,14 @@ def search_template_keys_in_pdf(pdf_bytes: bytes) -> List[TextMatch]:
                                 height=match_y1 - match_y0
                             )
                             
+                            # Get the label for this key
+                            key = match.group()
+                            label = field_labels.get(key, key.strip('{}').replace('_', ' ').title())
+                            
                             # Create match object
                             text_match = TextMatch(
-                                key=match.group(),
+                                key=key,
+                                label=label,  # Add the human-readable label
                                 value="",  # Empty value as this is a template
                                 position=position,
                                 font=font_info,
@@ -197,11 +203,11 @@ def search_template_keys_in_pdf(pdf_bytes: bytes) -> List[TextMatch]:
     
     return matches
 
-async def generate_field_descriptions_with_image(keys: List[str], pdf_content: str, matches: List[TextMatch], pdf_bytes: bytes) -> Dict[str, str]:
-    """Generate field descriptions using Gemini AI with PDF context AND visual analysis"""
+async def generate_field_descriptions_and_labels_with_image(keys: List[str], pdf_content: str, matches: List[TextMatch], pdf_bytes: bytes) -> Dict[str, Dict[str, str]]:
+    """Generate field descriptions and labels using Gemini AI with PDF context AND visual analysis"""
     if not model:
         # Fallback descriptions if Gemini is not available
-        return create_enhanced_fallback_descriptions(keys)
+        return create_enhanced_fallback_descriptions_and_labels(keys)
     
     try:
         # Convert PDF pages to images for visual analysis
@@ -247,9 +253,9 @@ async def generate_field_descriptions_with_image(keys: List[str], pdf_content: s
         
         # Enhanced prompt with image analysis instructions and birth certificate expertise
         prompt = f"""
-        I have a BIRTH CERTIFICATE PDF form with template keys that need descriptions. I'm providing both the text content AND images of the form pages for comprehensive analysis.
+        I have a BIRTH CERTIFICATE PDF form with template keys that need both HUMAN-READABLE LABELS and DESCRIPTIONS. I'm providing both the text content AND images of the form pages for comprehensive analysis.
 
-        TEMPLATE KEYS TO DESCRIBE: {keys_text}
+        TEMPLATE KEYS TO PROCESS: {keys_text}
 
         PDF TEXT CONTENT:
         {truncated_content}
@@ -262,57 +268,72 @@ async def generate_field_descriptions_with_image(keys: List[str], pdf_content: s
 
         ATTENDANT SECTION:
         - at1, at2, at3, at4, at5 = These are checkboxes for "ATTENDANT" types:
-          * at1 = Physician checkbox
-          * at2 = Traditional midwife checkbox  
-          * at3 = Hilot checkbox
-          * at4 = Others checkbox
-          * at5 = Others specify field
+          * at1 = Physician checkbox → Label: "Attendant: Physician"
+          * at2 = Traditional midwife checkbox → Label: "Attendant: Traditional Midwife"
+          * at3 = Hilot checkbox → Label: "Attendant: Hilot"
+          * at4 = Others checkbox → Label: "Attendant: Others"
+          * at5 = Others specify field → Label: "Attendant: Other (Specify)"
 
         MULTIPLE BIRTH SECTION:  
         - imb1, imb2, imb3 = "IF MULTIPLE BIRTH, CHILD WAS" options:
-          * imb1 = "1 First" checkbox
-          * imb2 = "2 Twin" checkbox  
-          * imb3 = "3 Triplet, etc." checkbox
-        - imb_o = "Others, Specify" field for multiple birth
+          * imb1 = "1 First" checkbox → Label: "Multiple Birth: First"
+          * imb2 = "2 Twin" checkbox → Label: "Multiple Birth: Twin"
+          * imb3 = "3 Triplet, etc." checkbox → Label: "Multiple Birth: Triplet+"
+        - imb_o = "Others, Specify" field → Label: "Multiple Birth: Other (Specify)"
 
         BIRTH ORDER/TYPE SECTION:
         - tb1, tb2, tb3 = Related to "Total number of children born alive"
-        - bo = "Birth Order" (first, second, third, etc.)
-        - wab = "Weight at Birth"
+        - bo = "Birth Order" → Label: "Birth Order"
+        - wab = "Weight at Birth" → Label: "Weight at Birth"
 
         GENDER/SEX MARKERS:
-        - fe = "Female" checkbox marker
-        - ma = "Male" checkbox marker
+        - fe = "Female" checkbox → Label: "Sex: Female"
+        - ma = "Male" checkbox → Label: "Sex: Male"
 
         CHILDREN COUNT FIELDS:
-        - tncba = "Total Number of Children Born Alive"
-        - ncslib = "No. of Children Still Living Including this Birth"  
-        - ncbobnd = "No. of Children Born alive but are Now Dead"
-        - ftb = "Father's Total no. of children Born"
-        - mtb = "Mother's Total no. of children Born"
+        - tncba = "Total Number of Children Born Alive" → Label: "Total Children Born Alive"
+        - ncslib = "No. of Children Still Living Including this Birth" → Label: "Children Still Living"
+        - ncbobnd = "No. of Children Born alive but are Now Dead" → Label: "Children Born Alive Now Dead"
+        - ftb = "Father's Age at the time of this birth" → Label: "Father's Age"
+        - mtb = "Mothers Age at the time of this birth" → Label: "Mother's Age"
 
         INSTRUCTIONS:
         1. Analyze the visual layout in the images to confirm field positions
-        2. Use birth certificate form knowledge above to provide accurate descriptions
+        2. Use birth certificate form knowledge above to provide accurate labels and descriptions
         3. Look for checkbox patterns, text input areas, and form sections
-        4. Be specific about what should be marked (X, checkmark, etc.)
-        5. Identify the exact purpose based on Philippines birth certificate standards
+        4. Create concise, professional labels (e.g., "Weight at Birth", not "WEIGHT_AT_BIRTH")
+        5. Provide specific descriptions about what should be entered/marked
 
-        Return ONLY a JSON object with precise descriptions:
+        Return ONLY a JSON object with this structure:
 
         {{
-            "{{key1}}": "Specific description based on birth certificate form structure",
-            "{{key2}}": "Another specific description"
+            "{{key1}}": {{
+                "label": "Human Readable Label",
+                "description": "Specific description of what this field is for"
+            }},
+            "{{key2}}": {{
+                "label": "Another Human Readable Label", 
+                "description": "Another specific description"
+            }}
         }}
 
-        Examples of correct descriptions:
-        - "Checkbox to mark with X if attendant was a Physician"
-        - "Checkbox to mark with X if multiple birth and child was first born (twins/triplets)"
-        - "Text input field for child's weight at birth in grams"
-        - "Checkbox to mark with X if child is female"
-        - "Number input field for total count of children born alive to mother"
+        Examples of correct format:
+        {{
+            "{{wab}}": {{
+                "label": "Weight at Birth",
+                "description": "Text input field for child's weight at birth in grams"
+            }},
+            "{{at1}}": {{
+                "label": "Attendant: Physician",
+                "description": "Checkbox to mark with X if attendant was a Physician"
+            }},
+            "{{fe}}": {{
+                "label": "Sex: Female",
+                "description": "Checkbox to mark with X if child is female"
+            }}
+        }}
 
-        Focus on the EXACT purpose based on Philippines birth certificate form structure.
+        Focus on creating clear, professional labels and precise descriptions based on Philippines birth certificate form structure.
         """
         
         # Create the content parts for Gemini (text + images)
@@ -339,116 +360,246 @@ async def generate_field_descriptions_with_image(keys: List[str], pdf_content: s
         
         # Parse the JSON response
         try:
-            descriptions = json.loads(response_text)
-            # Ensure all keys are present
+            field_data = json.loads(response_text)
+            # Ensure all keys are present and have proper structure
             result = {}
             for key in keys:
-                if key in descriptions:
-                    result[key] = descriptions[key]
+                if key in field_data and isinstance(field_data[key], dict):
+                    result[key] = field_data[key]
                 else:
                     # Enhanced fallback for missing keys
                     clean_key = key.strip('{}').replace('_', ' ').title()
-                    result[key] = f"Form field for {clean_key} (requires visual analysis for precise description)"
+                    result[key] = {
+                        "label": clean_key,
+                        "description": f"Form field for {clean_key.lower()} (requires visual analysis for precise description)"
+                    }
             return result
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
             print(f"Response text: {response_text[:500]}...")
             # Enhanced fallback descriptions
-            return create_enhanced_fallback_descriptions(keys)
+            return create_enhanced_fallback_descriptions_and_labels(keys)
             
     except Exception as e:
         print(f"Error generating descriptions with Gemini: {e}")
         # Enhanced fallback descriptions
-        return create_enhanced_fallback_descriptions(keys)
+        return create_enhanced_fallback_descriptions_and_labels(keys)
 
-def create_enhanced_fallback_descriptions(keys: List[str]) -> Dict[str, str]:
-    """Create accurate fallback descriptions based on Philippines birth certificate form structure"""
-    descriptions = {}
+def create_enhanced_fallback_descriptions_and_labels(keys: List[str]) -> Dict[str, Dict[str, str]]:
+    """Create accurate fallback descriptions and labels based on Philippines birth certificate form structure"""
+    field_data = {}
     
     # Birth certificate specific field mappings
     birth_cert_fields = {
         # Attendant checkboxes
-        '{at1}': "Checkbox to mark with X if attendant was a Physician",
-        '{at2}': "Checkbox to mark with X if attendant was a Traditional Midwife", 
-        '{at3}': "Checkbox to mark with X if attendant was a Hilot",
-        '{at4}': "Checkbox to mark with X if attendant was Others",
-        '{at5}': "Text input field to specify other type of attendant",
+        '{at1}': {
+            "label": "Attendant: Physician",
+            "description": "Checkbox to mark with X if attendant was a Physician"
+        },
+        '{at2}': {
+            "label": "Attendant: Traditional Midwife",
+            "description": "Checkbox to mark with X if attendant was a Traditional Midwife"
+        },
+        '{at3}': {
+            "label": "Attendant: Hilot",
+            "description": "Checkbox to mark with X if attendant was a Hilot"
+        },
+        '{at4}': {
+            "label": "Attendant: Others",
+            "description": "Checkbox to mark with X if attendant was Others"
+        },
+        '{at5}': {
+            "label": "Attendant: Other (Specify)",
+            "description": "Text input field to specify other type of attendant"
+        },
         
         # Multiple birth options
-        '{imb1}': "Checkbox to mark with X if multiple birth and child was first born",
-        '{imb2}': "Checkbox to mark with X if multiple birth and child was twin (second)",
-        '{imb3}': "Checkbox to mark with X if multiple birth and child was triplet or more",
-        '{imb_o}': "Text input field to specify other multiple birth details",
+        '{imb1}': {
+            "label": "Multiple Birth: First",
+            "description": "Checkbox to mark with X if multiple birth and child was first born"
+        },
+        '{imb2}': {
+            "label": "Multiple Birth: Twin",
+            "description": "Checkbox to mark with X if multiple birth and child was twin (second)"
+        },
+        '{imb3}': {
+            "label": "Multiple Birth: Triplet+",
+            "description": "Checkbox to mark with X if multiple birth and child was triplet or more"
+        },
+        '{imb_o}': {
+            "label": "Multiple Birth: Other (Specify)",
+            "description": "Text input field to specify other multiple birth details"
+        },
         
         # Gender markers
-        '{fe}': "Checkbox to mark with X if child is female",
-        '{ma}': "Checkbox to mark with X if child is male",
+        '{fe}': {
+            "label": "Sex: Female",
+            "description": "Checkbox to mark with X if child is female"
+        },
+        '{ma}': {
+            "label": "Sex: Male",
+            "description": "Checkbox to mark with X if child is male"
+        },
         
         # Birth statistics
-        '{tb1}': "Number input field for total number of children born alive to mother",
-        '{tb2}': "Number input field for number of children still living including this birth", 
-        '{tb3}': "Number input field for number of children born alive but now dead",
-        '{tncba}': "Number input field for total number of children born alive",
-        '{ncslib}': "Number input field for number of children still living including this birth",
-        '{ncbobnd}': "Number input field for number of children born alive but now dead",
-        '{ftb}': "Number input field for father's total number of children born",
-        '{mtb}': "Number input field for mother's total number of children born",
+        '{tb1}': {
+            "label": "Total Children Born Alive",
+            "description": "Number input field for total number of children born alive to mother"
+        },
+        '{tb2}': {
+            "label": "Children Still Living",
+            "description": "Number input field for number of children still living including this birth"
+        },
+        '{tb3}': {
+            "label": "Children Born Alive Now Dead",
+            "description": "Number input field for number of children born alive but now dead"
+        },
+        '{tncba}': {
+            "label": "Total Children Born Alive",
+            "description": "Number input field for total number of children born alive"
+        },
+        '{ncslib}': {
+            "label": "Children Still Living",
+            "description": "Number input field for number of children still living including this birth"
+        },
+        '{ncbobnd}': {
+            "label": "Children Born Alive Now Dead",
+            "description": "Number input field for number of children born alive but now dead"
+        },
+        '{ftb}': {
+            "label": "Father's Age at the time of this birth",
+            "description": "Number input field for father's total number of children born"
+        },
+        '{mtb}': {
+            "label": "Mothers Age at the time of this birth",
+            "description": "Number input field for mother's total number of children born"
+        },
         
         # Birth details
-        '{wab}': "Number input field for child's weight at birth in grams",
-        '{bo}': "Text input field for child's birth order (first, second, third, etc.)",
-        '{cob_t}': "Number input field for total number of children born alive"
+        '{wab}': {
+            "label": "Weight at Birth",
+            "description": "Number input field for child's weight at birth in grams"
+        },
+        '{bo}': {
+            "label": "Birth Order",
+            "description": "Text input field for child's birth order (first, second, third, etc.)"
+        },
+        '{cob_t}': {
+            "label": "Certificate of Birth Time",
+            "description": "Number input field for total number of children born alive"
+        }
     }
     
     for key in keys:
         if key in birth_cert_fields:
-            descriptions[key] = birth_cert_fields[key]
+            field_data[key] = birth_cert_fields[key]
         else:
             clean_key = key.strip('{}').lower()
             
             # Standard field patterns
             if 'day' in clean_key:
-                descriptions[key] = "Day component of a date (1-31)"
+                field_data[key] = {
+                    "label": "Day",
+                    "description": "Day component of a date (1-31)"
+                }
             elif 'month' in clean_key:
-                descriptions[key] = "Month component of a date (1-12 or January-December)"
+                field_data[key] = {
+                    "label": "Month",
+                    "description": "Month component of a date (1-12 or January-December)"
+                }
             elif 'year' in clean_key:
-                descriptions[key] = "Year component of a date (YYYY format)"
+                field_data[key] = {
+                    "label": "Year",
+                    "description": "Year component of a date (YYYY format)"
+                }
             elif 'first_name' in clean_key:
-                descriptions[key] = "Text input field for first name"
+                field_data[key] = {
+                    "label": "First Name",
+                    "description": "Text input field for first name"
+                }
             elif 'middle_name' in clean_key:
-                descriptions[key] = "Text input field for middle name"
+                field_data[key] = {
+                    "label": "Middle Name",
+                    "description": "Text input field for middle name"
+                }
             elif 'last_name' in clean_key:
-                descriptions[key] = "Text input field for last name"
+                field_data[key] = {
+                    "label": "Last Name",
+                    "description": "Text input field for last name"
+                }
             elif 'citizenship' in clean_key:
-                descriptions[key] = "Text input field for citizenship information"
+                field_data[key] = {
+                    "label": "Citizenship",
+                    "description": "Text input field for citizenship information"
+                }
             elif 'occupation' in clean_key:
-                descriptions[key] = "Text input field for occupation"
+                field_data[key] = {
+                    "label": "Occupation",
+                    "description": "Text input field for occupation"
+                }
             elif 'religion' in clean_key:
-                descriptions[key] = "Text input field for religion"
+                field_data[key] = {
+                    "label": "Religion",
+                    "description": "Text input field for religion"
+                }
             elif 'address' in clean_key:
-                descriptions[key] = "Text input field for address information"
+                field_data[key] = {
+                    "label": "Address",
+                    "description": "Text input field for address information"
+                }
             elif 'province' in clean_key or 'prov' in clean_key:
-                descriptions[key] = "Text input field for province"
+                field_data[key] = {
+                    "label": "Province",
+                    "description": "Text input field for province"
+                }
             elif 'city' in clean_key or 'municipality' in clean_key:
-                descriptions[key] = "Text input field for city or municipality"
+                field_data[key] = {
+                    "label": "City/Municipality",
+                    "description": "Text input field for city or municipality"
+                }
             elif 'registration' in clean_key:
-                descriptions[key] = "Text input field for registration number"
+                field_data[key] = {
+                    "label": "Registration Number",
+                    "description": "Text input field for registration number"
+                }
             elif 'date' in clean_key:
-                descriptions[key] = "Date input field"
+                field_data[key] = {
+                    "label": "Date",
+                    "description": "Date input field"
+                }
             elif 'place' in clean_key:
-                descriptions[key] = "Text input field for location or place"
+                field_data[key] = {
+                    "label": "Place",
+                    "description": "Text input field for location or place"
+                }
             elif 'informant' in clean_key:
-                descriptions[key] = "Text input field for informant information"
+                field_data[key] = {
+                    "label": "Informant",
+                    "description": "Text input field for informant information"
+                }
             elif 'prepared' in clean_key:
-                descriptions[key] = "Text input field for certificate preparation information"
+                field_data[key] = {
+                    "label": "Prepared By",
+                    "description": "Text input field for certificate preparation information"
+                }
             elif 'receive' in clean_key:
-                descriptions[key] = "Text input field for certificate receipt information"
+                field_data[key] = {
+                    "label": "Received By",
+                    "description": "Text input field for certificate receipt information"
+                }
             elif 'cob' in clean_key:
-                descriptions[key] = "Text input field related to birth certification"
+                field_data[key] = {
+                    "label": "Certificate of Birth",
+                    "description": "Text input field related to birth certification"
+                }
             else:
-                descriptions[key] = f"Text input field for {clean_key.replace('_', ' ').title()}"
+                readable_label = clean_key.replace('_', ' ').title()
+                field_data[key] = {
+                    "label": readable_label,
+                    "description": f"Text input field for {readable_label.lower()}"
+                }
     
-    return descriptions
+    return field_data
 
 # Main extraction endpoint
 @app.post("/extract-generate-template", response_model=TemplateExtractionResponse)
@@ -456,7 +607,7 @@ async def extract_text_from_pdf_enhanced(
     pdf_file: UploadFile = File(..., description="PDF file to search for template keys")
 ):
     """
-    Extract template keys in {key} format from PDF and generate field descriptions using AI with PDF context AND visual analysis.
+    Extract template keys in {key} format from PDF and generate field descriptions and labels using AI with PDF context AND visual analysis.
     """
     # Validate file type
     if not pdf_file.filename.lower().endswith('.pdf'):
@@ -477,16 +628,23 @@ async def extract_text_from_pdf_enhanced(
         
         doc.close()
         
-        # Search for template keys
-        matches = search_template_keys_in_pdf(pdf_bytes)
+        # First pass: get template keys to generate labels and descriptions
+        matches_temp = search_template_keys_in_pdf(pdf_bytes, {})
+        unique_keys = list(set([match.key for match in matches_temp]))
         
-        # Extract unique keys for description generation
-        unique_keys = list(set([match.key for match in matches]))
-        
-        # Generate field descriptions using enhanced method with image analysis
-        required_fields = await generate_field_descriptions_with_image(
-            unique_keys, full_pdf_text, matches, pdf_bytes
+        # Generate field descriptions and labels using enhanced method with image analysis
+        field_data = await generate_field_descriptions_and_labels_with_image(
+            unique_keys, full_pdf_text, matches_temp, pdf_bytes
         )
+        
+        # Create label mapping for second pass
+        field_labels = {key: data["label"] for key, data in field_data.items()}
+        
+        # Second pass: search again with labels
+        matches = search_template_keys_in_pdf(pdf_bytes, field_labels)
+        
+        # Create required_fields with readable labels as keys
+        required_fields = {data["label"]: data["description"] for data in field_data.values()}
         
         return TemplateExtractionResponse(
             required_fields=required_fields,
@@ -503,7 +661,7 @@ async def root():
         "message": "PDF Text Extraction API",
         "version": "1.0.0",
         "endpoints": {
-            "/extract-text-position": "POST - Extract template keys from PDF and generate field descriptions",
+            "/extract-generate-template": "POST - Extract template keys from PDF and generate field descriptions with readable labels",
             "/docs": "GET - API documentation"
         }
     }
