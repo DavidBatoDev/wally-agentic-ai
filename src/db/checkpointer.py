@@ -193,62 +193,6 @@ def _save_workflow_state(
         print(f"[_save_workflow_state] Error: {e}")
         return False
 
-
-def load_workflow_by_conversation(
-    db_client: SupabaseClient, 
-    conversation_id: str
-) -> Optional[CurrentDocumentInWorkflow]:
-    """
-    Load the workflow state for a specific conversation ID.
-    Returns CurrentDocumentInWorkflow object or None if not found.
-    """
-    try:
-        result = (
-            db_client.client
-            .table("workflows")
-            .select("*")
-            .eq("conversation_id", conversation_id)
-            .execute()
-        )
-        
-        if not result.data:
-            return None
-        
-        record = result.data[0]  # Should only be one record per conversation
-        
-        # Convert fields from database format back to FieldMetadata objects
-        fields = {}
-        raw_fields = record.get("fields", {})
-        if isinstance(raw_fields, dict):
-            for field_name, field_data in raw_fields.items():
-                if isinstance(field_data, dict):
-                    fields[field_name] = FieldMetadata(**field_data)
-                else:
-                    # Fallback for simple values
-                    fields[field_name] = FieldMetadata(
-                        value=field_data,
-                        value_status="pending",
-                        translated_value=None,
-                        translated_status="pending"
-                    )
-        
-        # Convert database record back to CurrentDocumentInWorkflow
-        return CurrentDocumentInWorkflow(
-            file_id=record.get("file_id", ""),
-            base_file_public_url=record.get("base_file_public_url", ""),
-            template_id=record.get("template_id", ""),
-            template_file_public_url=record.get("template_file_public_url", ""),
-            template_required_fields=record.get("template_required_fields", {}),
-            fields=fields,
-            translate_to=record.get("translate_to", None),
-            current_document_version_public_url=record.get("current_document_version_public_url", ""),
-        )
-        
-    except Exception as e:
-        print(f"[load_workflow_by_conversation] Error: {e}")
-        return None
-
-
 def _agent_state_to_checkpoint_data(state: AgentState) -> Dict[str, Any]:
     """
     Convert AgentState Pydantic model into a JSON-serializable dict.

@@ -1,9 +1,67 @@
 # backend/src/db/workflow_db.py
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
 from src.agent.agent_state import AgentState, CurrentDocumentInWorkflow, FieldMetadata
 from src.db.db_client import SupabaseClient
+
+
+def _extract_template_mappings(db_client: SupabaseClient, template_id: str) -> Dict[str, Any]:
+    """
+    Extract fillable_text_info from template.info_json and return only the required fields.
+    Returns a dictionary mapping keys to their metadata (label, font, position, page_number, bbox_center, rotation, alignment).
+    """
+    try:
+        if not template_id:
+            return {}
+        
+        # Get template info_json
+        result = (
+            db_client.client
+            .table("templates")
+            .select("info_json")
+            .eq("id", template_id)
+            .execute()
+        )
+        
+        if not result.data:
+            return {}
+        
+        info_json = result.data[0].get("info_json", {})
+        fillable_text_info = info_json.get("fillable_text_info", [])
+        
+        # Extract only the required fields for each fillable text item
+        template_mappings = {}
+        for item in fillable_text_info:
+            if not isinstance(item, dict) or "key" not in item:
+                continue
+                
+            key = item["key"]
+            
+            # Calculate bbox_center from position if available
+            bbox_center = None
+            position = item.get("position", {})
+            if position and all(coord in position for coord in ["x0", "y0", "x1", "y1"]):
+                bbox_center = {
+                    "x": (position["x0"] + position["x1"]) / 2,
+                    "y": (position["y0"] + position["y1"]) / 2
+                }
+            
+            template_mappings[key] = {
+                "label": item.get("label", ""),
+                "font": item.get("font", {}),
+                "position": position,
+                "page_number": item.get("page_number", 1),
+                "bbox_center": bbox_center,
+                "rotation": item.get("rotation", 0),
+                "alignment": item.get("alignment", "left")
+            }
+        
+        return template_mappings
+        
+    except Exception as e:
+        print(f"[_extract_template_mappings] Error extracting template mappings: {e}")
+        return {}
 
 
 def save_current_document_in_workflow_state(
@@ -42,6 +100,11 @@ def save_current_document_in_workflow_state(
                 # Handle case where it might already be a dict
                 fields_json[field_name] = field_metadata
         
+        # Extract template mappings from template info_json
+        origin_template_mappings = {}
+        if current_doc.template_id:
+            origin_template_mappings = _extract_template_mappings(db_client, current_doc.template_id)
+        
         # Prepare the workflow data
         workflow_data = {
             "file_id": current_doc.file_id or None,
@@ -53,6 +116,7 @@ def save_current_document_in_workflow_state(
             "template_required_fields": current_doc.template_required_fields or {},
             "translate_to": current_doc.translate_to or None,
             "current_document_version_public_url": current_doc.current_document_version_public_url or None,
+            "origin_template_mappings": origin_template_mappings,
         }
         
         # Check if workflow already exists for this conversation
@@ -130,7 +194,7 @@ def load_workflow_state(
                 fields_dict[field_name] = FieldMetadata(value=field_data)
         
         # Convert database record back to CurrentDocumentInWorkflow
-        return CurrentDocumentInWorkflow(
+        current_doc = CurrentDocumentInWorkflow(
             file_id=record.get("file_id", ""),
             base_file_public_url=record.get("base_file_public_url", ""),
             template_id=record.get("template_id", ""),
@@ -140,6 +204,8 @@ def load_workflow_state(
             translate_to=record.get("translate_to"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
+        
+        return current_doc
         
     except Exception as e:
         print(f"[load_workflow_state] Error: {e}")
@@ -185,7 +251,7 @@ def load_workflow_by_conversation(
                 fields_dict[field_name] = FieldMetadata(value=field_data)
         
         # Convert database record back to CurrentDocumentInWorkflow
-        return CurrentDocumentInWorkflow(
+        current_doc = CurrentDocumentInWorkflow(
             file_id=record.get("file_id", ""),
             base_file_public_url=record.get("base_file_public_url", ""),
             template_id=record.get("template_id", ""),
@@ -196,6 +262,96 @@ def load_workflow_by_conversation(
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         
+        return current_doc
+        
     except Exception as e:
         print(f"[load_workflow_by_conversation] Error: {e}")
         return None
+
+
+def get_workflow_template_mappings_by_conversation(
+    db_client: SupabaseClient, 
+    conversation_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Get only the template mappings for a specific conversation ID.
+    Returns the origin_template_mappings dictionary or None if not found.
+    """
+    try:
+        result = (
+            db_client.client
+            .table("workflows")
+            .select("origin_template_mappings")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        if not result.data:
+            return None
+        
+        record = result.data[0]
+        return record.get("origin_template_mappings", {})
+        
+    except Exception as e:
+        print(f"[get_workflow_template_mappings_by_conversation] Error: {e}")
+        return None
+
+
+def get_workflow_with_template_mappings_by_conversation(
+    db_client: SupabaseClient, 
+    conversation_id: str
+) -> tuple[Optional[CurrentDocumentInWorkflow], Optional[Dict[str, Any]]]:
+    """
+    Load both the workflow state and template mappings for a specific conversation ID.
+    Returns a tuple of (workflow_state, template_mappings).
+    Both can be None if not found.
+    """
+    try:
+        result = (
+            db_client.client
+            .table("workflows")
+            .select("*")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        if not result.data:
+            return None, None
+        
+        record = result.data[0]
+        
+        # Convert fields JSON back to FieldMetadata objects
+        fields_dict = {}
+        fields_data = record.get("fields", {}) or {}
+        for field_name, field_data in fields_data.items():
+            if isinstance(field_data, dict):
+                fields_dict[field_name] = FieldMetadata(
+                    value=field_data.get("value"),
+                    value_status=field_data.get("value_status", "pending"),
+                    translated_value=field_data.get("translated_value"),
+                    translated_status=field_data.get("translated_status", "pending"),
+                )
+            else:
+                # Handle legacy data or simple values
+                fields_dict[field_name] = FieldMetadata(value=field_data)
+        
+        # Convert database record back to CurrentDocumentInWorkflow
+        current_doc = CurrentDocumentInWorkflow(
+            file_id=record.get("file_id", ""),
+            base_file_public_url=record.get("base_file_public_url", ""),
+            template_id=record.get("template_id", ""),
+            template_file_public_url=record.get("template_file_public_url", ""),
+            template_required_fields=record.get("template_required_fields", {}),
+            fields=fields_dict,
+            translate_to=record.get("translate_to"),
+            current_document_version_public_url=record.get("current_document_version_public_url") or "",
+        )
+        
+        # Get template mappings separately
+        template_mappings = record.get("origin_template_mappings", {})
+        
+        return current_doc, template_mappings
+        
+    except Exception as e:
+        print(f"[get_workflow_with_template_mappings_by_conversation] Error: {e}")
+        return None, None

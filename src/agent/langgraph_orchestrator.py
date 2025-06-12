@@ -757,14 +757,18 @@ class LangGraphOrchestrator:
             if extraction_result.get("success", False):
                 extracted_fields = extraction_result.get("extracted_ocr", {})
                 
+                print("⚒️ Extracted fields:", extracted_fields)
+
                 # Update existing fields with extracted values
                 for field_key, field_data in extracted_fields.items():
                     if field_key in state.current_document_in_workflow_state.fields:
+                        print(f"📄1.  [EXTRACT_VALUES] Updating existing field: {field_key} with {field_data.get("value", "")}")
                         # Update the existing FieldMetadata with the extracted value
                         state.current_document_in_workflow_state.fields[field_key].value = field_data.get("value", "")
                         state.current_document_in_workflow_state.fields[field_key].value_status = "ocr"
                     else:
                         # Create new FieldMetadata for fields not previously in the template
+                        print(f"📄2. [EXTRACT_VALUES] Adding new field: {field_key} with {field_data.get("value", "")}")
                         from agent.agent_state import FieldMetadata
                         state.current_document_in_workflow_state.fields[field_key] = FieldMetadata(
                             value=field_data.get("value", ""),
@@ -806,7 +810,7 @@ class LangGraphOrchestrator:
                     for field_key, field_data in missing_fields.items():
                         clean_key = field_key.strip('{}')
                         field_label = field_data.get("label", clean_key)
-                        summary_parts.append(f"• **{clean_key}**: {field_label}\n\n")
+                        summary_parts.append(f"• **{field_label}**\n\n")
                     summary_parts.append("\n\n*These fields were not found in the document or were unclear during OCR processing. Please manually add them*\n\n")
                 
                 # Join all parts and remove any trailing newlines, then ensure single trailing newline
@@ -814,6 +818,7 @@ class LangGraphOrchestrator:
 
                 # Save the agent state with the extracted fields
                 save_agent_state(self.db_client, state.conversation_id, state)
+                save_current_document_in_workflow_state(self.db_client, state.conversation_id, state)
                 
                 # Set workflow status to waiting for confirmation
                 state.workflow_status = WorkflowStatus.IN_PROGRESS
