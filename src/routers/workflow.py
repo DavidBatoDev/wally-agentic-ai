@@ -29,6 +29,17 @@ class WorkflowStatusResponse(BaseModel):
     workflow_data: Optional[Dict[str, Any]] = None
 
 
+class FieldMetadataDict(BaseModel):
+    value: Any
+    value_status: str = "pending"
+    translated_value: Optional[str] = None
+    translated_status: str = "pending"
+
+
+class UpdateWorkflowFieldsRequest(BaseModel):
+    fields: Dict[str, FieldMetadataDict]
+
+
 # ────────────────────────────────────────────────── helpers
 def _guard_membership(conversation_id: str, current_user: User):
     """Ensure user has access to the conversation."""
@@ -57,10 +68,29 @@ def _serialize_workflow(workflow_obj) -> Dict[str, Any]:
         "template_id": workflow_obj.template_id,
         "template_file_public_url": workflow_obj.template_file_public_url,
         "template_required_fields": workflow_obj.template_required_fields,
-        "extracted_fields_from_raw_ocr": workflow_obj.extracted_fields_from_raw_ocr,
-        "filled_fields": workflow_obj.filled_fields,
-        "translated_fields": workflow_obj.translated_fields,
+        "fields": workflow_obj.fields,
+        "translate_to": workflow_obj.translate_to,
+        "current_document_version_public_url": workflow_obj.current_document_version_public_url,
     }
+
+
+def _serialize_fields_for_db(fields: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert FieldMetadata objects to JSON-serializable format for database storage."""
+    serialized = {}
+    for field_name, field_data in fields.items():
+        if hasattr(field_data, 'model_dump'):  # Pydantic model
+            serialized[field_name] = field_data.model_dump()
+        elif isinstance(field_data, dict):
+            serialized[field_name] = field_data
+        else:
+            # Fallback for simple values
+            serialized[field_name] = {
+                "value": field_data,
+                "value_status": "pending",
+                "translated_value": None,
+                "translated_status": "pending"
+            }
+    return serialized
 
 
 # ────────────────────────────────────────────────── routes
@@ -132,9 +162,7 @@ async def get_workflow_fields(
             "has_workflow": True,
             "fields": {
                 "template_required_fields": workflow.template_required_fields or {},
-                "extracted_fields_from_raw_ocr": workflow.extracted_fields_from_raw_ocr or {},
-                "filled_fields": workflow.filled_fields or {},
-                "translated_fields": workflow.translated_fields or {},
+                "fields": workflow.fields or {},
             }
         }
 
@@ -146,13 +174,8 @@ async def get_workflow_fields(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get workflow fields: {exc}",
         )
-    
-    # Add this payload model
-class UpdateWorkflowFieldsRequest(BaseModel):
-    filled_fields: Dict[str, str]
-    translated_fields: Dict[str, str]
 
-# Add this route to your workflow router
+
 @router.patch("/{conversation_id}/fields", response_model=Dict[str, Any])
 async def update_workflow_fields(
     conversation_id: UUID4,
@@ -160,7 +183,7 @@ async def update_workflow_fields(
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Update the filled_fields and translated_fields for a conversation's workflow.
+    Update the fields for a conversation's workflow.
     """
     try:
         # ── membership / auth ---------------------------------------------------
@@ -176,14 +199,16 @@ async def update_workflow_fields(
             )
 
         # ── update workflow fields ---------------------------------------------- 
+        # Serialize the fields for database storage
+        serialized_fields = _serialize_fields_for_db(request.fields)
+        
         # Update the workflow in the database
         update_data = {
-            "filled_fields": json.dumps(request.filled_fields),
-            "translated_fields": json.dumps(request.translated_fields),
+            "fields": json.dumps(serialized_fields),
             "updated_at": "now()"
         }
         
-        result = supabase_client.table("workflow").update(update_data).eq(
+        result = supabase_client.table("workflows").update(update_data).eq(
             "conversation_id", str(conversation_id)
         ).execute()
         
@@ -196,10 +221,7 @@ async def update_workflow_fields(
         return {
             "success": True,
             "message": "Workflow fields updated successfully",
-            "updated_fields": {
-                "filled_fields": request.filled_fields,
-                "translated_fields": request.translated_fields
-            }
+            "updated_fields": serialized_fields
         }
 
     except HTTPException:

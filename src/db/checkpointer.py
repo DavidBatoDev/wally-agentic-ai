@@ -2,7 +2,7 @@
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
-from src.agent.agent_state import AgentState, WorkflowStatus, CurrentDocumentInWorkflow
+from src.agent.agent_state import AgentState, WorkflowStatus, CurrentDocumentInWorkflow, FieldMetadata
 from src.db.db_client import SupabaseClient
 from langchain.schema.messages import HumanMessage, AIMessage, ToolMessage, SystemMessage
 from langchain.schema.messages import BaseMessage
@@ -127,17 +127,34 @@ def _save_workflow_state(
     Uses upsert pattern: updates existing record if found, otherwise creates new one.
     """
     try:
+        # Serialize fields to JSON-compatible format
+        serialized_fields = {}
+        for field_name, field_metadata in current_doc.fields.items():
+            if isinstance(field_metadata, FieldMetadata):
+                serialized_fields[field_name] = field_metadata.model_dump()
+            elif isinstance(field_metadata, dict):
+                # Already serialized
+                serialized_fields[field_name] = field_metadata
+            else:
+                # Fallback for unexpected types
+                serialized_fields[field_name] = {
+                    "value": field_metadata,
+                    "value_status": "pending",
+                    "translated_value": None,
+                    "translated_status": "pending"
+                }
+
         # Prepare the workflow data
         workflow_data = {
             "file_id": current_doc.file_id or None,
             "template_id": current_doc.template_id or None,
             "conversation_id": conversation_id,
-            "filled_fields": current_doc.filled_fields or {},
-            "translated_fields": current_doc.translated_fields or {},
+            "fields": serialized_fields,
             "base_file_public_url": current_doc.base_file_public_url or None,
             "template_file_public_url": current_doc.template_file_public_url or None,
             "template_required_fields": current_doc.template_required_fields or {},
-            "extracted_fields_from_raw_ocr": current_doc.extracted_fields_from_raw_ocr or {},
+            "translate_to": current_doc.translate_to or None,
+            "current_document_version_public_url": current_doc.current_document_version_public_url or None,
         }
         
         # Check if workflow already exists for this conversation
@@ -199,6 +216,22 @@ def load_workflow_by_conversation(
         
         record = result.data[0]  # Should only be one record per conversation
         
+        # Convert fields from database format back to FieldMetadata objects
+        fields = {}
+        raw_fields = record.get("fields", {})
+        if isinstance(raw_fields, dict):
+            for field_name, field_data in raw_fields.items():
+                if isinstance(field_data, dict):
+                    fields[field_name] = FieldMetadata(**field_data)
+                else:
+                    # Fallback for simple values
+                    fields[field_name] = FieldMetadata(
+                        value=field_data,
+                        value_status="pending",
+                        translated_value=None,
+                        translated_status="pending"
+                    )
+        
         # Convert database record back to CurrentDocumentInWorkflow
         return CurrentDocumentInWorkflow(
             file_id=record.get("file_id", ""),
@@ -206,9 +239,9 @@ def load_workflow_by_conversation(
             template_id=record.get("template_id", ""),
             template_file_public_url=record.get("template_file_public_url", ""),
             template_required_fields=record.get("template_required_fields", {}),
-            extracted_fields_from_raw_ocr=record.get("extracted_fields_from_raw_ocr", {}),
-            filled_fields=record.get("filled_fields", {}),
-            translated_fields=record.get("translated_fields", {}),
+            fields=fields,
+            translate_to=record.get("translate_to", None),
+            current_document_version_public_url=record.get("current_document_version_public_url", ""),
         )
         
     except Exception as e:
@@ -245,6 +278,24 @@ def _agent_state_to_checkpoint_data(state: AgentState) -> Dict[str, Any]:
         data["workflow_status"] = state.workflow_status
     else:
         data["workflow_status"] = str(state.workflow_status)
+    
+    # Serialize CurrentDocumentInWorkflow fields properly
+    if state.current_document_in_workflow_state and state.current_document_in_workflow_state.fields:
+        serialized_fields = {}
+        for field_name, field_metadata in state.current_document_in_workflow_state.fields.items():
+            if isinstance(field_metadata, FieldMetadata):
+                serialized_fields[field_name] = field_metadata.model_dump()
+            elif isinstance(field_metadata, dict):
+                serialized_fields[field_name] = field_metadata
+            else:
+                # Fallback
+                serialized_fields[field_name] = {
+                    "value": field_metadata,
+                    "value_status": "pending",
+                    "translated_value": None,
+                    "translated_status": "pending"
+                }
+        data["current_document_in_workflow_state"]["fields"] = serialized_fields
     
     return data
 
@@ -304,6 +355,26 @@ def _checkpoint_data_to_agent_state(data: Dict[str, Any]) -> AgentState:
     model_data["messages"] = messages
     model_data["conversation_history"] = conversation_history
     model_data["workflow_status"] = wf_status
+
+    # Handle CurrentDocumentInWorkflow fields deserialization
+    if "current_document_in_workflow_state" in model_data:
+        current_doc_data = model_data["current_document_in_workflow_state"]
+        if isinstance(current_doc_data, dict) and "fields" in current_doc_data:
+            fields = {}
+            raw_fields = current_doc_data["fields"]
+            if isinstance(raw_fields, dict):
+                for field_name, field_data in raw_fields.items():
+                    if isinstance(field_data, dict):
+                        fields[field_name] = FieldMetadata(**field_data)
+                    else:
+                        # Fallback for simple values
+                        fields[field_name] = FieldMetadata(
+                            value=field_data,
+                            value_status="pending",
+                            translated_value=None,
+                            translated_status="pending"
+                        )
+            current_doc_data["fields"] = fields
 
     # Use Pydantic's model validation to create the AgentState
     return AgentState(**model_data)

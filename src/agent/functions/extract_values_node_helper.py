@@ -58,8 +58,50 @@ class DocumentExtractor:
         self.radio_groups = {
             "gender": ["{ma}", "{fe}"],  # Male/Female
             "attendant": ["{at1}", "{at2}", "{at3}", "{at4}", "{at5}"],  # Different attendant types
-            "birth_type": ["{tb1}", "{tb2}", "{tb3}"],  # Birth type (single, twin, etc.)
+            "birth_type": ["{tb1}", "{tb2}", "{tb3}"],  # Birth type (single, twin, triplet)
             "multiple_birth": ["{imb1}", "{imb2}", "{imb3}"],  # Multiple birth order
+        }
+
+        # Field categorization for better extraction context
+        self.field_categories = {
+            "child_info": [
+                "{first_name}", "{middle_name}", "{last_name}", "{ma}", "{fe}", 
+                "{day}", "{month}", "{year}", "{wab}", "{bo}"
+            ],
+            "birth_location": [
+                "{placebirth_host}", "{pb_city/mnplt}", "{pb_prov}"
+            ],
+            "birth_type": [
+                "{tb1}", "{tb2}", "{tb3}", "{imb1}", "{imb2}", "{imb3}", "{imb_o}"
+            ],
+            "mother_info": [
+                "{m_first_name}", "{m_middle_name}", "{m_last_name}", "{m_occupation}",
+                "{m_religion}", "{m_citizenship}", "{mtb}", "{m_city/mnplt}", "{m_prov}"
+            ],
+            "father_info": [
+                "{f_first_name}", "{f_middle_name}", "{f_last_name}", "{f_occupation}",
+                "{f_religion}", "{f_citizenship}", "{ftb}", "{residence}"
+            ],
+            "attendant": [
+                "{at1}", "{at2}", "{at3}", "{at4}", "{at5}"
+            ],
+            "statistics": [
+                "{tncba}", "{ncslib}", "{ncbobnd}"
+            ],
+            "registry_info": [
+                "{city/mnplt}", "{province}", "{registration_n}", "{receive_by_date}",
+                "{receive_by_name}", "{receive_by_title}"
+            ],
+            "informant": [
+                "{informant_name}", "{informant_relation}", "{informant_address}", "{informant_date}"
+            ],
+            "certification": [
+                "{cob_t}", "{cob_date}", "{cob_title}", "{cob_print}", "{cob_address}",
+                "{prepared_by_name}", "{prepared_by_position}", "{prepared_by_date}"
+            ],
+            "parents_marriage": [
+                "{date_place_marriage_parents}"
+            ]
         }
 
     def identify_radio_groups_in_template(self, placeholder_json: Dict[str, str]) -> Dict[str, List[str]]:
@@ -77,8 +119,8 @@ class DocumentExtractor:
                 
         return active_groups
 
-    def apply_radio_button_logic(self, extracted: Dict[str, Any], missing: Dict[str, str], 
-                                active_groups: Dict[str, List[str]]) -> tuple[Dict[str, Any], Dict[str, str]]:
+    def apply_radio_button_logic(self, extracted: Dict[str, Any], missing: Dict[str, Any], 
+                                active_groups: Dict[str, List[str]]) -> tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Apply radio button logic: if one field in a group is selected, remove others from missing.
         """
@@ -86,7 +128,7 @@ class DocumentExtractor:
         
         for group_name, group_fields in active_groups.items():
             # Check if any field in this group was extracted
-            selected_fields = [field for field in group_fields if field in extracted and extracted[field]]
+            selected_fields = [field for field in group_fields if field in extracted and extracted[field]["value"]]
             
             if selected_fields:
                 # Remove all other fields in this group from missing
@@ -144,9 +186,9 @@ class DocumentExtractor:
                 pass
         return None
 
-    def create_smart_extraction_prompt(self, all_keys: List[str], field_descriptions: Dict[str, str], 
-                                     active_groups: Dict[str, List[str]]) -> str:
-        """Create an intelligent extraction prompt that understands radio button logic."""
+    def create_birth_certificate_extraction_prompt(self, placeholder_json: Dict[str, str], 
+                                                  active_groups: Dict[str, List[str]]) -> str:
+        """Create a specialized extraction prompt for Philippine birth certificates."""
         
         # Create group descriptions
         group_descriptions = []
@@ -154,37 +196,141 @@ class DocumentExtractor:
             group_desc = f"\n**{group_name.upper()} GROUP (select only ONE):**\n"
             for field in group_fields:
                 clean_key = field.strip('{}')
-                desc = field_descriptions.get(clean_key, "")
+                desc = placeholder_json.get(field, {}).get('description', '') if isinstance(placeholder_json.get(field), dict) else placeholder_json.get(field, '')
                 group_desc += f"  - {field}: {desc}\n"
             group_descriptions.append(group_desc)
         
+        # Create field descriptions by category
+        field_sections = []
+        for category, fields in self.field_categories.items():
+            category_fields = [f for f in fields if f in placeholder_json]
+            if category_fields:
+                section = f"\n**{category.upper().replace('_', ' ')} FIELDS:**\n"
+                for field in category_fields:
+                    field_info = placeholder_json.get(field, {})
+                    if isinstance(field_info, dict):
+                        label = field_info.get('label', field)
+                        description = field_info.get('description', '')
+                    else:
+                        label = field
+                        description = field_info
+                    section += f"  {field}: {label} - {description}\n"
+                field_sections.append(section)
+        
         # Create the main prompt
-        prompt = f"""You are an extraction engine for Philippine PSA birth certificates.
-Extract information from the provided image, focusing on the following fields:
+        prompt = f"""You are an expert OCR extraction engine specialized in Philippine PSA Birth Certificates.
 
-{", ".join(all_keys)}
+Extract information from the provided birth certificate image, focusing on the following categorized fields:
+
+{"".join(field_sections)}
 
 **IMPORTANT RADIO BUTTON LOGIC:**
 The following fields are grouped - only ONE field from each group should have a value:
 {"".join(group_descriptions)}
 
-**EXTRACTION RULES:**
-1. For radio button groups above, only select ONE option per group based on what you see
-2. Use "X" for selected checkboxes, empty string for unselected ones
-3. For regular text fields, extract the exact text you see
-4. If a value is not found or unclear, use an empty string
-5. For grouped fields, if you select one, leave the others empty (don't include them)
+**EXTRACTION RULES FOR BIRTH CERTIFICATES:**
 
-Return ONLY a JSON object with the appropriate keys. Example:
+1. **Radio Button Groups**: Only select ONE option per group based on what you see checked
+2. **Checkbox Fields**: Use "X" for checked boxes, empty string for unchecked
+3. **Text Fields**: Extract exact text as it appears on the document
+4. **Name Fields**: 
+   - Separate first, middle, and last names for child, mother, and father
+   - Do not mix up names between different people
+5. **Date Fields**: Extract dates as they appear (day, month, year separately if requested)
+6. **Numeric Fields**: Extract numbers only (ages, weights, counts)
+7. **Address Fields**: Extract complete addresses as written
+8. **Registry Information**: Look for official stamps, registry numbers, dates
+
+**SPECIFIC FIELD GUIDANCE:**
+- Sex: Look for checked boxes next to Male/Female
+- Birth Type: Look for Single/Twin/Triplet checkboxes
+- Attendant: Look for Physician/Nurse/Midwife/Hilot/Others checkboxes
+- Multiple Birth Order: If twins/triplets, look for birth order indicators
+- Weight at Birth: Usually in grams
+- Ages: Mother's and Father's age at time of birth
+- Registry Info: Official numbers, dates, and certifying official information
+
+**OUTPUT FORMAT:**
+Return ONLY a JSON object with the field keys and their extracted values. Use empty strings for fields not found or not applicable.
+
+Example:
 {{
     "first_name": "Juan",
+    "middle_name": "Santos",
     "last_name": "Dela Cruz",
     "ma": "X",
     "fe": "",
-    "at4": "X"
+    "day": "15",
+    "month": "March",
+    "year": "2020",
+    "tb1": "X",
+    "tb2": "",
+    "at1": "X",
+    "m_first_name": "Maria",
+    "f_first_name": "Jose"
 }}
 
-DO NOT include any explanations or additional text outside the JSON object.
+DO NOT include explanations, notes, or any text outside the JSON object.
+"""
+        return prompt
+
+    def create_refinement_prompt(self, raw_extracted: Dict, placeholder_json: Dict[str, str], 
+                               active_groups: Dict[str, List[str]]) -> str:
+        """Create a refinement prompt to clean up and organize extracted data."""
+        
+        # Create field type mapping for validation
+        checkbox_fields = []
+        text_fields = []
+        
+        for field, info in placeholder_json.items():
+            field_info = info if isinstance(info, dict) else {'description': info}
+            description = field_info.get('description', '').lower()
+            
+            if 'checkbox' in description and 'mark with x' in description:
+                checkbox_fields.append(field)
+            else:
+                text_fields.append(field)
+        
+        # Create validation rules
+        validation_rules = f"""
+**FIELD TYPE VALIDATION:**
+
+Checkbox Fields (should contain only "X" or empty string):
+{', '.join(checkbox_fields)}
+
+Text Fields (should contain actual text content):
+{', '.join(text_fields)}
+
+**RADIO BUTTON GROUPS (only ONE per group should have "X"):**
+"""
+        
+        for group_name, group_fields in active_groups.items():
+            validation_rules += f"\n{group_name.upper()}: {', '.join(group_fields)}"
+        
+        prompt = f"""You are a data validation expert for Philippine birth certificate extraction.
+
+Review and correct the following extracted data to ensure it follows proper formatting rules:
+
+{validation_rules}
+
+**CURRENT EXTRACTED DATA:**
+{json.dumps(raw_extracted, indent=2)}
+
+**CORRECTION RULES:**
+1. **Checkbox Fields**: Must contain only "X" (if checked) or "" (if unchecked)
+2. **Radio Groups**: Only ONE field per group should contain "X"
+3. **Name Fields**: Should contain proper names, not checkmarks or irrelevant text
+4. **Date/Number Fields**: Should contain appropriate date or numeric values
+5. **Address Fields**: Should contain complete address information
+6. **Text Fields**: Should not contain "X" unless it's part of actual text content
+
+**COMMON ERRORS TO FIX:**
+- Names appearing in checkbox fields → Move to appropriate name fields
+- Multiple checkboxes selected in radio groups → Keep only the most appropriate one
+- "X" appearing in text fields that should contain actual text
+- Missing or misplaced information that was extracted to wrong fields
+
+Return a corrected JSON object with the same structure but properly formatted values.
 """
         return prompt
 
@@ -259,7 +405,7 @@ DO NOT include any explanations or additional text outside the JSON object.
                 image_bytes = file_content
                 print(f"Detected image file: {len(image_bytes)} bytes")
             elif file_extension == ".pdf" and fitz:
-                # For demo purposes, we'll just use the first page
+                # For birth certificates, we'll process the first page
                 try:
                     image_bytes = self.convert_pdf_to_images(file_content)[0]
                     print(f"Converted first PDF page to image: {len(image_bytes)} bytes")
@@ -282,18 +428,10 @@ DO NOT include any explanations or additional text outside the JSON object.
             if not image_bytes:
                 raise Exception("Could not process file")
             
-            # 6. Ask Gemini to extract information with smart radio button logic
-            # Prepare the keys from the placeholder JSON
-            all_keys = [k.strip('{}') for k in placeholder_json.keys()]
-            
-            # Create a dictionary mapping keys to their descriptions for better context
-            field_descriptions = {k.strip('{}'): placeholder_json[k] for k in placeholder_json.keys()}
-            
-            # Create the smart extraction prompt
-            initial_prompt = self.create_smart_extraction_prompt(all_keys, field_descriptions, active_groups)
-            
+            # 6. Initial extraction with specialized birth certificate prompt
             try:
-                print("Sending smart extraction request to Gemini API...")
+                print("Sending birth certificate extraction request to Gemini API...")
+                
                 # Properly create and prepare the PIL image object
                 img = Image.open(io.BytesIO(image_bytes))
                 
@@ -301,11 +439,14 @@ DO NOT include any explanations or additional text outside the JSON object.
                 if img.mode not in ['RGB', 'L']:
                     img = img.convert('RGB')
                 
+                # Create specialized birth certificate prompt
+                initial_prompt = self.create_birth_certificate_extraction_prompt(placeholder_json, active_groups)
+                
                 initial_response = self.gemini.generate_content(
                     contents=[initial_prompt, img],
                     generation_config={
                         "temperature": 0.1,
-                        "max_output_tokens": 2048,
+                        "max_output_tokens": 4096,
                     }
                 )
                 
@@ -318,7 +459,6 @@ DO NOT include any explanations or additional text outside the JSON object.
                 if not raw_extracted:
                     print("Failed to extract JSON from initial response")
                     print(f"Response preview: {initial_response_text[:200]}...")
-                    # Return error with raw response for debugging
                     return {
                         "template_id": template_id,
                         "error": "Could not extract valid JSON from Gemini initial response",
@@ -327,84 +467,64 @@ DO NOT include any explanations or additional text outside the JSON object.
                         "missing_value_keys": placeholder_json
                     }
                 
-                # 7. Process the extracted data with a second LLM call to organize it correctly
-                # Create a comprehensive description of the fields for better processing
-                field_info = "\n".join([f"{key}: {field_descriptions[key]}" for key in all_keys])
+                # 7. Refinement pass to clean up the data
+                try:
+                    refine_prompt = self.create_refinement_prompt(raw_extracted, placeholder_json, active_groups)
+                    
+                    refine_response = self.gemini.generate_content(
+                        contents=refine_prompt,
+                        generation_config={
+                            "temperature": 0.1,
+                            "max_output_tokens": 4096,
+                        }
+                    )
+                    
+                    refine_response_text = refine_response.text
+                    print(f"Received refinement response of length {len(refine_response_text)}")
+                    
+                    # Extract the refined JSON
+                    refined_json = self.extract_json_from_text(refine_response_text)
+                    if not refined_json:
+                        print("Failed to extract JSON from refinement response, using raw extraction")
+                        refined_json = raw_extracted
                 
-                # Explain the radio button logic to the refinement LLM
-                radio_logic_info = "\n".join([
-                    f"{group_name.upper()} GROUP (only one should be selected): {', '.join(fields)}"
-                    for group_name, fields in active_groups.items()
-                ])
-                
-                # Explain tricky fields that need special handling
-                special_fields_info = f"""
-Special fields to check:
-1. Radio Button Groups (only ONE from each group should have a value):
-{radio_logic_info}
-
-2. Checkbox fields: These should contain "X" if checked, empty string if not checked
-3. Name fields: Ensure names are placed in the correct fields:
-   - first_name, middle_name, last_name (for child)
-   - mother_first_name, mother_middle_name, mother_last_name (for mother)
-   - father_first_name, father_middle_name, father_last_name (for father)
-   
-4. Checkbox data should never contain names, addresses, or other text data
-"""
-                
-                # Make refinement prompt
-                refine_prompt = f"""You are an expert in organizing extracted data from Philippine PSA birth certificates.
-                
-I have extracted raw data from a birth certificate, but some fields might be incorrectly populated.
-Please reorganize this data to ensure it's correctly placed in the appropriate fields.
-
-Here's the description of each field:
-{field_info}
-
-{special_fields_info}
-
-Here's the raw extracted data:
-{json.dumps(raw_extracted, indent=2)}
-
-IMPORTANT: Apply radio button logic - for each group, only ONE field should have a value:
-{radio_logic_info}
-
-- For radio button groups, if multiple fields have values, keep only the most appropriate one
-- For gender checkboxes, only one should have "X" based on the gender
-- Make sure dates are properly formatted
-- Ensure names are in the correct fields (don't mix up child, mother, and father names)
-- For all checkbox fields, use "X" if checked, empty string if not
-- If names were incorrectly extracted into checkbox fields, move them to the appropriate name fields
-
-Return a corrected JSON object with the same keys but properly organized values.
-"""
-                
-                # Make the second LLM call to refine the data
-                refine_response = self.gemini.generate_content(
-                    contents=refine_prompt,
-                    generation_config={
-                        "temperature": 0.1,
-                        "max_output_tokens": 4096,
-                    }
-                )
-                
-                refine_response_text = refine_response.text
-                print(f"Received refinement response of length {len(refine_response_text)}")
-                
-                # Extract the refined JSON
-                refined_json = self.extract_json_from_text(refine_response_text)
-                if not refined_json:
-                    print("Failed to extract JSON from refinement response, falling back to raw extraction")
+                except Exception as refine_err:
+                    print(f"Refinement error: {refine_err}, using raw extraction")
                     refined_json = raw_extracted
                 
                 # 8. Format the response with placeholders and apply radio button logic
                 extracted = {}
                 for k in placeholder_json.keys():
                     clean_key = k.strip("{}")
+                    field_info = placeholder_json[k]
+                    
+                    # Get label from field info
+                    if isinstance(field_info, dict):
+                        label = field_info.get('label', k)
+                    else:
+                        label = k
+                    
+                    # Check if value was extracted
                     if clean_key in refined_json and refined_json[clean_key]:
-                        extracted[k] = refined_json[clean_key]
+                        extracted[k] = {
+                            "label": label,
+                            "value": refined_json[clean_key]
+                        }
                 
-                missing = {k: placeholder_json[k] for k in placeholder_json if k not in extracted}
+                # Format missing fields with label and empty value
+                missing = {}
+                for k in placeholder_json.keys():
+                    if k not in extracted:
+                        field_info = placeholder_json[k]
+                        if isinstance(field_info, dict):
+                            label = field_info.get('label', k)
+                        else:
+                            label = k
+                        
+                        missing[k] = {
+                            "label": label,
+                            "value": ""
+                        }
                 
                 # Apply radio button logic to clean up missing fields
                 extracted, missing = self.apply_radio_button_logic(extracted, missing, active_groups)

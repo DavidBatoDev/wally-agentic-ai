@@ -52,8 +52,12 @@ class TextMatch(BaseModel):
     context_after: str
     bbox_center: Dict[str, float]
 
+class FieldInfo(BaseModel):
+    label: str
+    description: str
+
 class TemplateExtractionResponse(BaseModel):
-    required_fields: Dict[str, str]  # Now uses readable labels as keys
+    required_fields: Dict[str, FieldInfo]  # Changed to use template keys with FieldInfo objects
     fillable_text_info: List[TextMatch]
 
 # Helper functions
@@ -391,7 +395,6 @@ def create_enhanced_fallback_descriptions_and_labels(keys: List[str]) -> Dict[st
     
     # Birth certificate specific field mappings
     birth_cert_fields = {
-        # Attendant checkboxes
         '{at1}': {
             "label": "Attendant: Physician",
             "description": "Checkbox to mark with X if attendant was a Physician"
@@ -643,8 +646,11 @@ async def extract_text_from_pdf_enhanced(
         # Second pass: search again with labels
         matches = search_template_keys_in_pdf(pdf_bytes, field_labels)
         
-        # Create required_fields with readable labels as keys
-        required_fields = {data["label"]: data["description"] for data in field_data.values()}
+        # Create required_fields with template keys as keys and FieldInfo objects as values
+        required_fields = {
+            key: FieldInfo(label=data["label"], description=data["description"])
+            for key, data in field_data.items()
+        }
         
         return TemplateExtractionResponse(
             required_fields=required_fields,

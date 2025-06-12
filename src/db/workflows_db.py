@@ -1,8 +1,8 @@
-# backend/src/db/workflow_checkpointer.py
-from typing import Dict, Any, Optional
+# backend/src/db/workflow_db.py
+from typing import Optional
 from datetime import datetime, timezone
 
-from src.agent.agent_state import AgentState, CurrentDocumentInWorkflow
+from src.agent.agent_state import AgentState, CurrentDocumentInWorkflow, FieldMetadata
 from src.db.db_client import SupabaseClient
 
 
@@ -28,17 +28,31 @@ def save_current_document_in_workflow_state(
         if not current_doc:
             raise ValueError("current_document_in_workflow_state is missing from AgentState")
         
+        # Convert FieldMetadata objects to JSON-serializable format
+        fields_json = {}
+        for field_name, field_metadata in current_doc.fields.items():
+            if isinstance(field_metadata, FieldMetadata):
+                fields_json[field_name] = {
+                    "value": field_metadata.value,
+                    "value_status": field_metadata.value_status,
+                    "translated_value": field_metadata.translated_value,
+                    "translated_status": field_metadata.translated_status,
+                }
+            else:
+                # Handle case where it might already be a dict
+                fields_json[field_name] = field_metadata
+        
         # Prepare the workflow data
         workflow_data = {
             "file_id": current_doc.file_id or None,
             "template_id": current_doc.template_id or None,
             "conversation_id": conversation_id,
-            "filled_fields": current_doc.filled_fields or {},
-            "translated_fields": current_doc.translated_fields or {},
+            "fields": fields_json,
             "base_file_public_url": current_doc.base_file_public_url or None,
             "template_file_public_url": current_doc.template_file_public_url or None,
             "template_required_fields": current_doc.template_required_fields or {},
-            "extracted_fields_from_raw_ocr": current_doc.extracted_fields_from_raw_ocr or {},
+            "translate_to": current_doc.translate_to or None,
+            "current_document_version_public_url": current_doc.current_document_version_public_url or None,
         }
         
         # Check if workflow already exists for this conversation
@@ -100,6 +114,21 @@ def load_workflow_state(
         
         record = result.data[0]
         
+        # Convert fields JSON back to FieldMetadata objects
+        fields_dict = {}
+        fields_data = record.get("fields", {}) or {}
+        for field_name, field_data in fields_data.items():
+            if isinstance(field_data, dict):
+                fields_dict[field_name] = FieldMetadata(
+                    value=field_data.get("value"),
+                    value_status=field_data.get("value_status", "pending"),
+                    translated_value=field_data.get("translated_value"),
+                    translated_status=field_data.get("translated_status", "pending"),
+                )
+            else:
+                # Handle legacy data or simple values
+                fields_dict[field_name] = FieldMetadata(value=field_data)
+        
         # Convert database record back to CurrentDocumentInWorkflow
         return CurrentDocumentInWorkflow(
             file_id=record.get("file_id", ""),
@@ -107,9 +136,9 @@ def load_workflow_state(
             template_id=record.get("template_id", ""),
             template_file_public_url=record.get("template_file_public_url", ""),
             template_required_fields=record.get("template_required_fields", {}),
-            extracted_fields_from_raw_ocr=record.get("extracted_fields_from_raw_ocr", {}),
-            filled_fields=record.get("filled_fields", {}),
-            translated_fields=record.get("translated_fields", {}),
+            fields=fields_dict,
+            translate_to=record.get("translate_to"),
+            current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         
     except Exception as e:
@@ -140,6 +169,21 @@ def load_workflow_by_conversation(
         
         record = result.data[0]  # Should only be one record per conversation
         
+        # Convert fields JSON back to FieldMetadata objects
+        fields_dict = {}
+        fields_data = record.get("fields", {}) or {}
+        for field_name, field_data in fields_data.items():
+            if isinstance(field_data, dict):
+                fields_dict[field_name] = FieldMetadata(
+                    value=field_data.get("value"),
+                    value_status=field_data.get("value_status", "pending"),
+                    translated_value=field_data.get("translated_value"),
+                    translated_status=field_data.get("translated_status", "pending"),
+                )
+            else:
+                # Handle legacy data or simple values
+                fields_dict[field_name] = FieldMetadata(value=field_data)
+        
         # Convert database record back to CurrentDocumentInWorkflow
         return CurrentDocumentInWorkflow(
             file_id=record.get("file_id", ""),
@@ -147,9 +191,9 @@ def load_workflow_by_conversation(
             template_id=record.get("template_id", ""),
             template_file_public_url=record.get("template_file_public_url", ""),
             template_required_fields=record.get("template_required_fields", {}),
-            extracted_fields_from_raw_ocr=record.get("extracted_fields_from_raw_ocr", {}),
-            filled_fields=record.get("filled_fields", {}),
-            translated_fields=record.get("translated_fields", {}),
+            fields=fields_dict,
+            translate_to=record.get("translate_to"),
+            current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         
     except Exception as e:

@@ -15,6 +15,13 @@ class WorkflowStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class FieldMetadata(BaseModel):
+    value: Any                                   # Main field value (extracted or filled)
+    value_status: str = "pending"                # Status for value: "pending", "ocr", "edited", or "confirmed"
+
+    translated_value: Optional[str] = None       # LLM translation of the value (if available)
+    translated_status: str = "pending"           # Status for translated_value: "pending", "translated", "edited", or "confirmed"
+
 
 class Upload(BaseModel):
     """
@@ -41,9 +48,9 @@ class CurrentDocumentInWorkflow(BaseModel):
     template_id: str = ""  # ID of the template used, if any (Will get this using the find_template_node)
     template_file_public_url: str = "" # template file url (Will get this using the find_template_node)
     template_required_fields: Dict[str, Any] = Field(default_factory=dict) # require (Will get this using the find_template_node)
-    extracted_fields_from_raw_ocr: Dict[str, Any] = Field(default_factory=dict)  # fields extracted from the document (will get this using extract_values_from_base_file_url)
-    filled_fields: Dict[str, Any] = Field(default_factory=dict)  # fields filled in the document (will get this in manual fill_node)
-    translated_fields: Dict[str, Any] = Field(default_factory=dict)  # fields translated, if applicable (will get this using translated_fields)
+    fields: Dict[str, FieldMetadata] = Field(default_factory=dict) # "{birth_date}": FieldMetadata(value="2023-01-01", value_status="confirmed")
+    translate_to: Optional[str] = None  # Language to translate the document to, if applicable
+    current_document_version_public_url: str = "" # ID of the current document version
 
     class Config:
         arbitrary_types_allowed = True
@@ -66,11 +73,10 @@ class AgentState(BaseModel):
     # 4) File uploads (split into two categories)
     user_uploads: List[Upload] = Field(default_factory=list)
     # 5) Detected user intent if the 
-    translate_to: Optional[str] = "" # we will get this node (ask_user_desired_language)
+    translate_to: Optional[str] = ""  # we will get this node (ask_user_desired_language)
     # 7) Current Document We are Working On
-    current_document_in_workflow_state: CurrentDocumentInWorkflow = Field(default_factory=dict) 
+    current_document_in_workflow_state: CurrentDocumentInWorkflow = Field(default_factory=CurrentDocumentInWorkflow) 
     # 8) Output & audit
-    current_document_version_id: str = ""
     steps_done: List[str] = Field(default_factory=list)
     # 9) if WorkflowStatus.WAITING_CONFIRMATION go to this node
     current_pending_node: str = ""

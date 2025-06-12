@@ -11,7 +11,7 @@ class SmartRouter:
     """
     AI-powered router that uses Gemini 2.0 Flash to decide the next node
     based on the current agent state and workflow context.
-    Updated for new AgentState structure.
+    Updated for new AgentState structure with FieldMetadata.
     """
     
     def __init__(self):
@@ -69,8 +69,8 @@ class SmartRouter:
         
         # Check if the upload has analysis and is_templatable is False
         if hasattr(state.latest_upload, 'analysis') and state.latest_upload.analysis:
-            if hasattr(state.latest_upload.analysis, 'is_templatable'):
-                is_templatable = state.latest_upload.analysis.is_templatable
+            if isinstance(state.latest_upload.analysis, dict):
+                is_templatable = state.latest_upload.analysis.get('is_templatable', False)
                 if not is_templatable:
                     return True
         
@@ -80,21 +80,24 @@ class SmartRouter:
         
         return False
     
-    def _has_sufficient_filled_fields(self, state: AgentState) -> bool:
+    def _has_sufficient_fields_for_translation(self, state: AgentState) -> bool:
         """
-        Check if filled_fields has at least 3 non-empty key-value pairs.
+        Check if we have sufficient field values for translation.
+        Uses the new FieldMetadata structure.
         """
-        filled_fields = state.current_document_in_workflow_state.filled_fields
-        if not filled_fields or not isinstance(filled_fields, dict):
+        fields = state.current_document_in_workflow_state.fields
+        if not fields or not isinstance(fields, dict):
             return False
         
-        # Count non-empty values
-        non_empty_count = 0
-        for key, value in filled_fields.items():
-            if value and str(value).strip():  # Check if value exists and is not empty/whitespace
-                non_empty_count += 1
+        # Count fields with confirmed values
+        confirmed_fields = 0
+        for field_name, field_metadata in fields.items():
+            if (hasattr(field_metadata, 'value_status') and 
+                field_metadata.value_status in ["ocr", "edited", "confirmed"] and
+                field_metadata.value and str(field_metadata.value).strip()):
+                confirmed_fields += 1
         
-        return non_empty_count >= 3
+        return confirmed_fields >= 3
     
     def _validate_and_redirect_node(self, suggested_node: str, state: AgentState) -> str:
         """
@@ -104,19 +107,18 @@ class SmartRouter:
         # CRITICAL: Check if upload is not templatable before allowing template workflow nodes
         if self._should_skip_template_workflow(state):
             template_workflow_nodes = [
-                "ask_user_desired_langauge", "find_template", "extract_required_fields",
-                "translate_required_fields", "fill_template", "manual_fill_template"
+                "ask_user_desired_langauge", "find_template", "extract_required_fields"
             ]
             if suggested_node in template_workflow_nodes:
                 print(f"Redirecting '{suggested_node}' to 'tools' - upload is not templatable")
                 return "tools"
         
-        # CRITICAL: Check for sufficient filled fields before translation
-        if suggested_node == "translate_required_fields":
-            if not self._has_sufficient_filled_fields(state):
-                print(f"Redirecting '{suggested_node}' to 'extract_required_fields' - insufficient filled fields")
-                return "extract_required_fields"
-        
+        # CRITICAL: Check for sufficient fields before allowing node execution
+        if suggested_node == "extract_required_fields":
+            if not self._has_sufficient_fields_for_translation(state):
+                print(f"Node '{suggested_node}' can proceed - will extract/fill more fields")
+            # Always allow extract_required_fields to run if template exists
+            
         # Check if the suggested node has all required prerequisites
         if self._can_execute_node(suggested_node, state):
             return suggested_node
@@ -130,22 +132,15 @@ class SmartRouter:
     def _can_execute_node(self, node: str, state: AgentState) -> bool:
         """
         Check if a node can execute based on current agent state.
-        Updated for new AgentState structure.
+        Updated for new AgentState structure with FieldMetadata.
         """
         # CRITICAL: Block template workflow nodes if upload is not templatable
         if self._should_skip_template_workflow(state):
             template_workflow_nodes = [
-                "ask_user_desired_langauge", "find_template", "extract_required_fields",
-                "translate_required_fields", "fill_template", "manual_fill_template"
+                "ask_user_desired_langauge", "find_template", "extract_required_fields"
             ]
             if node in template_workflow_nodes:
                 print(f"Node '{node}' blocked - upload is not templatable")
-                return False
-        
-        # CRITICAL: Special validation for translate_required_fields
-        if node == "translate_required_fields":
-            if not self._has_sufficient_filled_fields(state):
-                print(f"Node '{node}' blocked - insufficient filled fields (need at least 3 non-empty)")
                 return False
         
         node_requirements = {
@@ -156,40 +151,22 @@ class SmartRouter:
             },
             "ask_user_desired_langauge": {
                 "required_fields": ["latest_upload"],
+                "conditions": ["upload_is_templatable"],
                 "description": "Ask user for desired translation language"
             },
             "find_template": {
                 "required_fields": ["latest_upload", "translate_to"],
+                "conditions": ["upload_is_templatable"],
                 "description": "Find matching template"
             },
             "extract_required_fields": {
-                "required_fields": ["current_document_template_id", "current_document_template_file_public_url", "current_document_template_required_fields"],
+                "required_fields": ["template_id", "template_required_fields"],
                 "description": "Extract fields from document"
-            },
-            "translate_required_fields": {
-                "required_fields": ["current_document_filled_fields", "translate_to"],
-                "description": "Translate extracted fields (requires at least 3 non-empty filled fields)"
-            },
-            "fill_template": {
-                "required_fields": ["current_document_template_file_public_url", "current_document_translated_fields"],
-                "description": "Generate final document"
-            },
-            "manual_fill_template": {
-                "required_fields": ["current_document_template_required_fields"],
-                "description": "Manual template filling"
-            },
-            "change_specific_field": {
-                "required_fields": ["current_document_filled_fields"],
-                "description": "Update specific fields"
             },
             "save": {
                 # Save can always execute
                 "required_fields": [],
                 "description": "Save current state"
-            },
-            "end_node": {
-                "required_fields": ["current_document_version_id"],
-                "description": "Complete workflow"
             }
         }
         
@@ -197,7 +174,9 @@ class SmartRouter:
             print(f"Unknown node: {node}")
             return False
         
-        required_fields = node_requirements[node]["required_fields"]
+        requirements = node_requirements[node]
+        required_fields = requirements.get("required_fields", [])
+        conditions = requirements.get("conditions", [])
         
         # Check each required field
         for field in required_fields:
@@ -223,37 +202,40 @@ class SmartRouter:
                 print(f"Node '{node}' missing required field: {field} (empty list)")
                 return False
         
+        # Check additional conditions
+        for condition in conditions:
+            if condition == "upload_is_templatable":
+                if self._should_skip_template_workflow(state):
+                    print(f"Node '{node}' blocked - condition '{condition}' failed")
+                    return False
+        
         print(f"Node '{node}' can execute - all prerequisites satisfied")
         return True
     
     def _get_field_value(self, state: AgentState, field: str) -> Any:
         """
         Get field value from the state, handling nested fields in current_document_in_workflow_state.
+        Updated for new field structure.
         """
         # Handle direct state fields
         if field == "latest_upload":
             return state.latest_upload
         elif field == "translate_to":
             return state.translate_to
-        elif field == "current_document_version_id":
-            return state.current_document_version_id
         
-        # Handle current_document_in_workflow_state nested fields
-        elif field.startswith("current_document_"):
-            nested_field = field.replace("current_document_", "")
-            if hasattr(state.current_document_in_workflow_state, nested_field):
-                return getattr(state.current_document_in_workflow_state, nested_field)
-            else:
-                # Handle field name mappings
-                field_mappings = {
-                    "template_id": "template_id",
-                    "template_file_public_url": "template_file_public_url",
-                    "template_required_fields": "template_required_fields",
-                    "filled_fields": "filled_fields",
-                    "translated_fields": "translated_fields"
-                }
-                mapped_field = field_mappings.get(nested_field, nested_field)
-                return getattr(state.current_document_in_workflow_state, mapped_field, None)
+        # Handle current_document_in_workflow_state fields
+        current_doc = state.current_document_in_workflow_state
+        
+        if field == "template_id":
+            return current_doc.template_id
+        elif field == "template_file_public_url":
+            return current_doc.template_file_public_url
+        elif field == "template_required_fields":
+            return current_doc.template_required_fields
+        elif field == "fields":
+            return current_doc.fields
+        elif field == "current_document_version_public_url":
+            return current_doc.current_document_version_public_url
         
         # Fallback to direct attribute access
         return getattr(state, field, None)
@@ -266,27 +248,18 @@ class SmartRouter:
         # CRITICAL: If upload is not templatable, redirect all template workflow requests to tools
         if self._should_skip_template_workflow(state):
             template_workflow_nodes = [
-                "ask_user_desired_langauge", "find_template", "extract_required_fields",
-                "translate_required_fields", "fill_template", "manual_fill_template"
+                "ask_user_desired_langauge", "find_template", "extract_required_fields"
             ]
             if target_node in template_workflow_nodes:
                 print(f"Prerequisite check: redirecting '{target_node}' to 'tools' - upload not templatable")
                 return "tools"
-        
-        # CRITICAL: If target is translate_required_fields but insufficient filled fields
-        if target_node == "translate_required_fields" and not self._has_sufficient_filled_fields(state):
-            print(f"Prerequisite check: redirecting '{target_node}' to 'extract_required_fields' - insufficient filled fields")
-            return "extract_required_fields"
         
         # Define the workflow dependency chain
         dependency_chain = [
             ("tools", []),  # No prerequisites
             ("ask_user_desired_langauge", ["latest_upload"]),
             ("find_template", ["latest_upload", "translate_to"]),
-            ("extract_required_fields", ["current_document_template_id", "current_document_template_file_public_url", "current_document_template_required_fields"]),
-            ("translate_required_fields", ["current_document_filled_fields", "translate_to"]),
-            ("fill_template", ["current_document_template_file_public_url", "current_document_translated_fields"]),
-            ("end_node", ["current_document_version_id"])
+            ("extract_required_fields", ["template_id", "template_required_fields"]),
         ]
         
         # Special case: Handle tool calls first
@@ -314,35 +287,26 @@ class SmartRouter:
         # CRITICAL: If upload is not templatable, redirect to tools
         if self._should_skip_template_workflow(state):
             template_workflow_nodes = [
-                "ask_user_desired_langauge", "find_template", "extract_required_fields",
-                "translate_required_fields", "fill_template", "manual_fill_template"
+                "ask_user_desired_langauge", "find_template", "extract_required_fields"
             ]
             if node in template_workflow_nodes:
                 return "tools"
-        
-        # CRITICAL: If node needs sufficient filled fields but doesn't have them
-        if node == "translate_required_fields" and not self._has_sufficient_filled_fields(state):
-            return "extract_required_fields"
         
         # Check what's missing for each field and determine the node that provides it
         field_providers = {
             "latest_upload": "tools",
             "translate_to": "ask_user_desired_langauge",
-            "current_document_template_id": "find_template",
-            "current_document_template_file_public_url": "find_template",
-            "current_document_template_required_fields": "find_template",
-            "current_document_filled_fields": "extract_required_fields",
-            "current_document_translated_fields": "translate_required_fields",
-            "current_document_version_id": "fill_template"
+            "template_id": "find_template",
+            "template_file_public_url": "find_template",
+            "template_required_fields": "find_template",
+            "fields": "extract_required_fields",
+            "current_document_version_public_url": "extract_required_fields"  # This gets set during field extraction
         }
         
         node_requirements = {
             "ask_user_desired_langauge": ["latest_upload"],
             "find_template": ["latest_upload", "translate_to"],
-            "extract_required_fields": ["current_document_template_id", "current_document_template_file_public_url", "current_document_template_required_fields"],
-            "translate_required_fields": ["current_document_filled_fields", "translate_to"],
-            "fill_template": ["current_document_template_file_public_url", "current_document_translated_fields"],
-            "end_node": ["current_document_version_id"]
+            "extract_required_fields": ["template_id", "template_required_fields"],
         }
         
         if node not in node_requirements:
@@ -377,7 +341,7 @@ class SmartRouter:
     def _prepare_state_summary(self, state: AgentState) -> Dict[str, Any]:
         """
         Create a clean summary of the agent state for the AI to analyze.
-        Updated for new AgentState structure.
+        Updated for new AgentState structure with FieldMetadata.
         """
         current_doc = state.current_document_in_workflow_state
         latest_upload = state.latest_upload
@@ -386,16 +350,29 @@ class SmartRouter:
         upload_is_templatable = False
         if latest_upload:
             if hasattr(latest_upload, 'analysis') and latest_upload.analysis:
-                if hasattr(latest_upload.analysis, 'is_templatable'):
-                    upload_is_templatable = latest_upload.analysis.is_templatable
+                if isinstance(latest_upload.analysis, dict):
+                    upload_is_templatable = latest_upload.analysis.get('is_templatable', False)
             elif hasattr(latest_upload, 'is_templatable'):
                 upload_is_templatable = latest_upload.is_templatable
         
-        # Check filled fields sufficiency
-        has_sufficient_filled_fields = self._has_sufficient_filled_fields(state)
-        filled_fields_count = 0
-        if current_doc.filled_fields:
-            filled_fields_count = sum(1 for v in current_doc.filled_fields.values() if v and str(v).strip())
+        # Check field status using new FieldMetadata structure
+        has_fields = bool(current_doc.fields)
+        field_count = len(current_doc.fields) if current_doc.fields else 0
+        
+        # Count fields by status
+        fields_with_values = 0
+        fields_translated = 0
+        if current_doc.fields:
+            for field_metadata in current_doc.fields.values():
+                if (hasattr(field_metadata, 'value_status') and 
+                    field_metadata.value_status in ["ocr", "edited", "confirmed"] and
+                    field_metadata.value):
+                    fields_with_values += 1
+                
+                if (hasattr(field_metadata, 'translated_status') and 
+                    field_metadata.translated_status in ["translated", "edited", "confirmed"] and
+                    field_metadata.translated_value):
+                    fields_translated += 1
         
         return {
             "workflow_status": state.workflow_status.value,
@@ -406,12 +383,12 @@ class SmartRouter:
             "translate_to": state.translate_to,
             "has_template": bool(current_doc.template_id),
             "has_template_fields": bool(current_doc.template_required_fields),
-            "has_extracted_fields": bool(current_doc.extracted_fields_from_raw_ocr),
-            "has_filled_fields": bool(current_doc.filled_fields),
-            "has_sufficient_filled_fields": has_sufficient_filled_fields,
-            "filled_fields_count": filled_fields_count,
-            "has_translated_fields": bool(current_doc.translated_fields),
-            "has_document_output": bool(state.current_document_version_id),
+            "has_fields": has_fields,
+            "field_count": field_count,
+            "fields_with_values": fields_with_values,
+            "fields_translated": fields_translated,
+            "has_sufficient_fields": self._has_sufficient_fields_for_translation(state),
+            "has_document_output": bool(current_doc.current_document_version_public_url),
             "last_message_has_tool_calls": (
                 bool(state.messages) and 
                 hasattr(state.messages[-1], 'tool_calls') and 
@@ -419,9 +396,7 @@ class SmartRouter:
             ),
             "recent_messages_count": len(state.messages),
             "template_required_fields": list(current_doc.template_required_fields.keys()) if current_doc.template_required_fields else [],
-            "extracted_fields_keys": list(current_doc.extracted_fields_from_raw_ocr.keys()) if current_doc.extracted_fields_from_raw_ocr else [],
-            "filled_fields_keys": list(current_doc.filled_fields.keys()) if current_doc.filled_fields else [],
-            "translated_fields_keys": list(current_doc.translated_fields.keys()) if current_doc.translated_fields else [],
+            "field_keys": list(current_doc.fields.keys()) if current_doc.fields else [],
             "context_flags": state.context,
             "current_pending_node": state.current_pending_node,
             "conversation_analysis": self._analyze_conversation(state.messages)
@@ -542,7 +517,7 @@ class SmartRouter:
     def _create_routing_prompt(self, state_summary: Dict[str, Any]) -> str:
         """
         Create a structured prompt for Gemini to decide the next workflow node.
-        Updated for new workflow structure.
+        Updated for new workflow structure with FieldMetadata.
         """
         conversation_analysis = state_summary.get("conversation_analysis", {})
         
@@ -557,11 +532,11 @@ CURRENT WORKFLOW STATE:
 - Target language: {state_summary['translate_to']}
 - Has template: {state_summary['has_template']}
 - Template fields defined: {state_summary['has_template_fields']}
-- Fields extracted: {state_summary['has_extracted_fields']}
-- Fields filled: {state_summary['has_filled_fields']}
-- Has sufficient filled fields (≥3): {state_summary['has_sufficient_filled_fields']}
-- Filled fields count: {state_summary['filled_fields_count']}
-- Fields translated: {state_summary['has_translated_fields']}
+- Has field data: {state_summary['has_fields']}
+- Total field count: {state_summary['field_count']}
+- Fields with values: {state_summary['fields_with_values']}
+- Fields translated: {state_summary['fields_translated']}
+- Has sufficient fields (≥3): {state_summary['has_sufficient_fields']}
 - Final document ready: {state_summary['has_document_output']}
 - Last message has tool calls: {state_summary['last_message_has_tool_calls']}
 - Current pending node: {state_summary['current_pending_node']}
@@ -575,20 +550,15 @@ CONVERSATION ANALYSIS:
 
 AVAILABLE NODES:
 - tools: Execute tool calls or handle user interactions (always available)
-- ask_user_desired_langauge: Ask user for desired translation language (requires uploaded file AND file must be templatable)
+- ask_user_desired_langauge: Ask user for desired translation language (requires uploaded templatable file)
 - find_template: Find matching template (requires uploaded file and target language)
-- extract_required_fields: Extract text fields from document (requires template)
-- translate_required_fields: Translate extracted fields (requires at least 3 non-empty filled fields and target language)
-- fill_template: Generate final document (requires translated fields)
-- manual_fill_template: Manual template filling (requires template fields)
-- change_specific_field: Update specific fields based on user corrections
+- extract_required_fields: Extract and fill fields from document (requires template)
 - save: Save current state to database (always available)
-- end_node: Complete the workflow (requires final document)
 
 CRITICAL RULES:
-1. If upload is not templatable, NEVER route to template workflow nodes (ask_user_desired_langauge, find_template, extract_required_fields, translate_required_fields, fill_template, manual_fill_template). Always use 'tools' instead.
-2. NEVER route to 'translate_required_fields' unless there are at least 3 non-empty filled fields.
-3. Only use nodes that exist in your LangGraph workflow.
+1. If upload is not templatable, NEVER route to template workflow nodes (ask_user_desired_langauge, find_template, extract_required_fields). Always use 'tools' instead.
+2. Only use nodes that exist in your simplified workflow.
+3. The extract_required_fields node handles both extraction and field filling in one step.
 
 INTELLIGENT ROUTING LOGIC:
 Consider both the workflow state AND the conversation context:
@@ -600,22 +570,16 @@ Consider both the workflow state AND the conversation context:
 5. User wants to upload file OR no file uploaded yet → tools
 6. File uploaded, language specified, templatable, but no template → find_template
 7. Template found but fields not extracted/filled → extract_required_fields
-8. Fields filled but insufficient (< 3 non-empty) → extract_required_fields (continue extraction)
-9. User requests corrections → change_specific_field
-10. Fields filled sufficiently (≥ 3 non-empty fields), translation needed → translate_required_fields
-11. Ready for final document → fill_template
-12. User asks questions or needs help → tools
-13. Workflow complete → end_node
-14. Default/save state → save
+8. User asks questions or needs help → tools
+9. Default/save state → save
 
 CONTEXTUAL CONSIDERATIONS:
 - If user says "yes/ok/continue" and workflow can proceed → next logical step
-- If user provides corrections → change_specific_field
+- If user provides corrections → extract_required_fields (to handle corrections)
 - If user specifies a language BUT file is not templatable → tools
 - Match the user's current intent with appropriate workflow step
 - Consider what prerequisites are satisfied
 - ALWAYS check if upload is templatable before proceeding with template workflow
-- ALWAYS check if sufficient filled fields exist before translation
 
 RESPONSE FORMAT:
 Return ONLY the node name as a single word. No explanations, no quotes, no additional text.
@@ -675,11 +639,10 @@ Next node:"""
             
             text = parts[0].get("text", "").strip()
             
-            # Validate the node name
+            # Validate the node name - updated for simplified workflow
             valid_nodes = [
                 "ask_user_desired_langauge", "find_template", "extract_required_fields",
-                "translate_required_fields", "fill_template", "manual_fill_template",
-                "change_specific_field", "tools", "save", "end_node"
+                "tools", "save"
             ]
             
             if text in valid_nodes:
@@ -695,7 +658,7 @@ Next node:"""
     def _fallback_routing(self, state: AgentState) -> str:
         """
         Fallback to rule-based routing if AI fails.
-        Updated for new workflow structure.
+        Updated for new simplified workflow structure.
         """
         # CRITICAL: Check if upload is not templatable first
         if self._should_skip_template_workflow(state):
@@ -720,9 +683,9 @@ Next node:"""
             not state.current_document_in_workflow_state.template_id):
             return "find_template"
         
-        # Check if we have template but no extracted fields
+        # Check if we have template but no field data
         if (state.current_document_in_workflow_state.template_id and 
-            not state.current_document_in_workflow_state.filled_fields):
+            not state.current_document_in_workflow_state.fields):
             return "extract_required_fields"
         
         # Default fallback

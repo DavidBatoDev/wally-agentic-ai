@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from src.agent.agent_state import AgentState, WorkflowStatus
+from src.agent.agent_state import AgentState, WorkflowStatus, FieldMetadata
 from agent.core_tools import get_tools
 from src.db.checkpointer import (
     _checkpoint_data_to_agent_state,
@@ -91,18 +91,11 @@ class LangGraphOrchestrator:
         g.add_node("tools",            self._tool_node)
         g.add_node("save_state_graph", self._save_state_graph)
         g.add_node("finalize",         self._finalize_response)
-
-        # ── 2. Placeholder nodes (now uncommented with debug prints) ───────
         g.add_node("find_template",             self._find_template_node)
         g.add_node("extract_required_fields",   self._extract_values_node)
-        # g.add_node("translate_required_fields", self._translate_required_fields_node) 🕐
-        # g.add_node("fill_template",             self._fill_template_node) 🕐
-        # g.add_node("change_specific_field",     self._change_specific_field_node) 🕐
-        # g.add_node("manual_fill_template",      self._manual_fill_template_node) 🕐
-        # g.add_node("end_node",                  self._end_node) 🕐
         g.add_node("ask_user_desired_langauge", self._ask_user_desired_language_node)
 
-        # ── 3. Linear backbone you can already run ────────────────────────
+        # ── 2. Linear backbone you can already run ────────────────────────
         g.set_entry_point("load_state_graph")
 
         # After loading state, check if we need to handle a file upload
@@ -136,27 +129,22 @@ class LangGraphOrchestrator:
         g.add_edge("save_state_graph", "finalize")
         g.add_edge("finalize",         END)
 
-        # ── 4. Dynamic router after *every* agent turn ─────────────────────
+        # ── 3. Dynamic router after *every* agent turn ─────────────────────
         g.add_conditional_edges(
             "agent",
             self._route_next, # your smart router
             {
                 "find_template":           "find_template",
                 "extract_required_fields":   "extract_required_fields", # if we want to get the values of extract_required_fields using the required_fields of the template
-                # "translate":                 "translate_required_fields", # if we dont have any translation to the filled_required_fields yet
-                # "fill_template":             "fill_template", # to generate a new template document_version
-                # "manual_fill":               "manual_fill_template", # when user manually filled up the filled_required_fields
-                # "change_field":              "change_specific_field", # when the user want's to change something in the filled_required_fields
-                # "end":                       "end_node", # the workflow is finished
+                "ask_user_desired_langauge": "ask_user_desired_langauge", # when we want to ask the user for the desired language
                 "tools":                    "tools", # when we want to call any tools like: showing_buttons, showing_upload_file_button
                 "save":                     "save_state_graph", # we want to end the current workflow but set the workflow-status to in progress
-                "ask_user_desired_langauge": "ask_user_desired_langauge", # when we want to ask the user for the desired language
             },
         )
 
         return g.compile()
-    
-    #  for determining if the user upload is a document or not related
+
+    # Conditional Edge
     def _is_document_templatable(self, state: AgentState) -> str:
         """
         Conditional routing logic after document analysis.
@@ -197,75 +185,6 @@ class LangGraphOrchestrator:
             print(f"🔍 [IS_DOC_TEMPLATABLE] No desired language specified, routing to ask for language")
             return "dont_have_desired_language"
 
-    async def _ask_user_desired_language_node(self, state: AgentState) -> AgentState:
-        """
-        Ask the user what language they want to translate the document to.
-        This node is reached when we have a templatable document but no translate_to language specified.
-        """
-        print(f"🌐 [ASK_LANGUAGE] Starting for conversation: {state.conversation_id}")
-        
-        # Mark this step as done
-        if "ask_user_desired_langauge" not in state.steps_done:
-            state.steps_done.append("ask_user_desired_langauge")
-        
-        try:
-            # Get document info for context
-            doc_type = "document"
-            detected_language = "unknown"
-            
-            if state.latest_upload and state.latest_upload.analysis:
-                analysis = state.latest_upload.analysis
-                doc_type = analysis.get("doc_type", "document").replace("_", " ").title()
-                detected_language = analysis.get("detected_language", "unknown").replace("_", " ").title()
-            
-            # Create message asking for desired language
-            language_prompt = (
-                f"🌐 **Let me try to find existing template from the database**\n\n"
-                f"I've analyzed your **{doc_type}** (currently in **{detected_language}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
-                f"**To try and find the template of this document, I would need to know the desired language, What language would you like me to translate it to?**\n\n"
-                f"Please specify your desired target language, and I'll proceed with finding the appropriate template."
-            )
-            
-            language_msg = AIMessage(content=language_prompt)
-            state.messages.append(language_msg)
-            
-            # Create message in database
-            self.db_client.create_message(
-                conversation_id=state.conversation_id,
-                sender="assistant",
-                kind="text",
-                body=json.dumps({
-                    "text": language_prompt
-                }),
-            )
-            
-            # Set workflow status to waiting for user input
-            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
-            
-            print(f"🌐 [ASK_LANGUAGE] Language prompt sent successfully")
-            
-        except Exception as e:
-            print(f"🌐 [ASK_LANGUAGE] ERROR: {str(e)}")
-            log.exception(f"Error asking for desired language: {e}")
-            
-            error_msg = AIMessage(content="⚠️ Please specify what language you'd like me to translate your document to.")
-            state.messages.append(error_msg)
-            
-            # Create error message in database
-            self.db_client.create_message(
-                conversation_id=state.conversation_id,
-                sender="assistant",
-                kind="text",
-                body=json.dumps({
-                    "text": "⚠️ Please specify what language you'd like me to translate your document to."
-                }),
-            )
-            
-            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
-
-        print(f"🌐 [ASK_LANGUAGE] Completed")
-        return state
-    
     def _handle_upload(self, state: AgentState) -> str:
         """
         Check if the latest message indicates a file upload.
@@ -285,31 +204,53 @@ class LangGraphOrchestrator:
         # Default to agent node for regular messages
         return "agent"
 
+    def _route_next(self, state: AgentState) -> str:
+        """
+        Decide what the next node should be using smart routing with fallback.
+        
+        This method now uses the SmartRouter if available, otherwise falls back
+        to the original rule-based routing logic.
+        """
+        # Try smart routing first if enabled and available
+        if self.use_smart_routing and self.smart_router:
+            try:
+                next_node = self.smart_router.route_next(state)
+                print(f"Smart router decision for conversation {state.conversation_id}: {next_node}")
+                return next_node
+            except Exception as e:
+                log.warning(f"Smart router failed for conversation {state.conversation_id}: {e}. Using fallback.")
+                # Continue to fallback routing below
+
+    # System Prompt
     def _create_system_message(self, state: AgentState) -> str:
         """Return a dynamic system prompt describing the current workflow step."""
         base = (
             "You are a specialised document-translation assistant that guides the "
-            "user through a structured flow: upload ➜ analyze ➜ find template ➜ extract fields "
-            "➜ translate ➜ fill template ➜ generate final document.\n\n"
+            "user through a structured flow: upload ➜ analyze ➜ ask language ➜ find template "
+            "➜ extract fields ➜ translate ➜ generate final document.\n\n"
         )
 
         ctx: List[str] = []
         current_doc = state.current_document_in_workflow_state
         
-        # Determine current workflow stage based on new state structure
+        # Determine current workflow stage based on updated state structure
         if state.latest_upload and state.latest_upload.is_templatable and not state.translate_to:
             ctx.append("Document uploaded and analyzed as templatable. Ask user for desired translation language.")
-        elif state.latest_upload and state.translate_to and not current_doc.template_id:
+        elif state.translate_to and not current_doc.template_id:
             ctx.append("Target language specified. Find matching template based on document analysis.")
-        elif current_doc.template_id and not current_doc.extracted_fields_from_raw_ocr:
+        elif current_doc.template_id and not current_doc.fields:
             ctx.append("Template found. Extract required field values from the uploaded document.")
-        elif current_doc.extracted_fields_from_raw_ocr and not current_doc.filled_fields:
-            ctx.append("Fields extracted from document. Fill template fields with extracted values.")
-        elif current_doc.filled_fields and not current_doc.translated_fields and state.translate_to:
-            ctx.append("Fields filled. Translate them to the target language.")
-        elif current_doc.translated_fields and not state.current_document_version_id:
-            ctx.append("Fields translated. Generate the final translated document.")
-        elif state.current_document_version_id:
+        elif current_doc.fields and state.translate_to:
+            # Check if any fields need translation
+            needs_translation = any(
+                field.translated_status == "pending" 
+                for field in current_doc.fields.values()
+            )
+            if needs_translation:
+                ctx.append("Fields extracted. Translate field values to the target language.")
+            elif not current_doc.current_document_version_public_url:
+                ctx.append("Fields translated. Generate the final translated document.")
+        elif current_doc.current_document_version_public_url:
             ctx.append("Final translated document generated. Workflow complete - offer download or further assistance.")
         else:
             if not state.latest_upload:
@@ -333,16 +274,18 @@ class LangGraphOrchestrator:
             more = "..." if len(current_doc.template_required_fields) > 5 else ""
             ctx.append(f"Template requires: {', '.join(keys)}{more}.")
         
-        if current_doc.filled_fields:
-            filled_keys = list(current_doc.filled_fields.keys())[:3]
-            more = "..." if len(current_doc.filled_fields) > 3 else ""
-            ctx.append(f"Fields filled: {', '.join(filled_keys)}{more}.")
+        if current_doc.fields:
+            filled_keys = [k for k, v in current_doc.fields.items() if v.value_status != "pending"][:3]
+            if filled_keys:
+                more = "..." if len(filled_keys) > 3 else ""
+                ctx.append(f"Fields with values: {', '.join(filled_keys)}{more}.")
+
+        # Add workflow status context
+        if state.workflow_status != WorkflowStatus.PENDING:
+            ctx.append(f"Workflow status: {state.workflow_status.value}.")
         
-        # if state.steps_done:
-        #     ctx.append(f"Completed steps: {', '.join(state.steps_done)}.")
-        
-        # if state.workflow_status != WorkflowStatus.PENDING:
-        #     ctx.append(f"Workflow status: {state.workflow_status.value}.")
+        if state.current_pending_node:
+            ctx.append(f"Pending action: {state.current_pending_node}.")
 
         guidelines = (
             "GUIDELINES:\n"
@@ -362,16 +305,12 @@ class LangGraphOrchestrator:
             "\n\nIf the user provides ANY new workflow information "
             "(translate_to, field corrections, language preferences), **call the tool "
             "`update_agent_state`** with only the keys that changed. "
-            "The main updatable fields are: translate_to, context flags, and workflow status. "
+            "The main updatable fields are: translate_to, workflow_status, current_pending_node, and field values. "
             "You can then ALSO call other tools like show_buttons, show_upload_button, "
             "or show_document_preview in the same response to provide the next UI interaction. "
             f"Remember to always pass conversation_id='{state.conversation_id}' to tools. "
             "After all tool calls, send your normal assistant reply explaining the current step."
         )
-
-        # Add current workflow node context if available
-        if state.current_pending_node:
-            ctx.append(f"Pending action: {state.current_pending_node}.")
 
         return (
             base
@@ -382,6 +321,7 @@ class LangGraphOrchestrator:
             + tool_hint
         )
 
+    # Nodes
     async def _agent_node(self, state: AgentState) -> AgentState:
         # Mark that _agent_node has run
         if "agent" not in state.steps_done:
@@ -405,7 +345,7 @@ class LangGraphOrchestrator:
                     clean_messages.append(tool_msg)
 
                 else:
-                    # continue
+                    continue
                     # Case B: No content, only tool_calls (still wrap in list)
                     tool_msg = AIMessage(
                         content="",
@@ -425,7 +365,7 @@ class LangGraphOrchestrator:
 
         for msg in clean_messages:
             if msg.content.strip() == "":
-                print(f"🙏🏻 MSG: ", msg)
+                print(f"🙏🏻 MSG content: ", msg)
 
         # 2) Build the SystemMessage with the current workflow context
         sys_msg = SystemMessage(content=self._create_system_message(state))
@@ -444,7 +384,7 @@ class LangGraphOrchestrator:
 
         # 6) Append the LLM's response to the state
 
-        print("response", response)
+        print("🤖🙏🏻 MSG response", response)
         
         # Create message in database
         if response.content.strip() != "":
@@ -458,6 +398,22 @@ class LangGraphOrchestrator:
 
         state.messages.append(response)
         state.workflow_status = WorkflowStatus.IN_PROGRESS
+        return state
+
+    async def _load_state_graph(self, state: AgentState) -> AgentState:
+        db_state = load_agent_state(self.db_client, state.conversation_id)
+        if db_state:
+            merged_state = self._merge_states(state, db_state)
+            return merged_state
+
+        # No existing row → just continue with the fresh state we were given
+        return state
+
+    async def _save_state_graph(self, state: AgentState) -> AgentState:
+        try:
+            save_agent_state(self.db_client, state.conversation_id, state)
+        except Exception as exc:
+            log.exception("save_state_graph failed: %s", exc)
         return state
     
     async def _tool_node(self, state: AgentState) -> AgentState:
@@ -593,7 +549,7 @@ class LangGraphOrchestrator:
                 }),
             )
 
-            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
+            state.workflow_status = WorkflowStatus.IN_PROGRESS
             
             print(f"🔍 [ANALYZE_DOC] Analysis completed successfully")
             
@@ -617,403 +573,483 @@ class LangGraphOrchestrator:
         return state
 
     async def _find_template_node(self, state: AgentState) -> AgentState:
-            """
-            Use the find_template_match tool to find the best matching template.
-            This calls the template matching tool directly in a deterministic way.
-            """
-            print(f"🔍 [FIND_TEMPLATE] Starting for conversation: {state.conversation_id}")
+        """
+        Use the find_template_match tool to find the best matching template.
+        This calls the template matching tool directly in a deterministic way.
+        """
+        print(f"🔍 [FIND_TEMPLATE] Starting for conversation: {state.conversation_id}")
+
+        # Insert a message that we're finding a template
+        template_msg = AIMessage(content="🔍 Finding the best matching template for your document...")
+        state.messages.append(template_msg)
+
+        # Create message in database too
+        self.db_client.create_message(
+            conversation_id=state.conversation_id,
+            sender="assistant",
+            kind="text",
+            body=json.dumps({
+                "text": "🔍 Finding the best matching template for your document..."
+            }),
+        )
+
+        # Mark this step as done
+        state.steps_done.append("find_template")
         
-            # Insert a message that we're finding a template
-            template_msg = AIMessage(content="🔍 Finding the best matching template for your document...")
-            state.messages.append(template_msg)
-        
-            # Create message in database too
+        try:
+            # Hardcoded template ID
+            template_id = "9fc0c5fc-2885-4d58-ba0f-4711244eb7df"
+            
+            # Get template data from Supabase
+            print(f"🔍 [FIND_TEMPLATE] Fetching template data for ID: {template_id}")
+            
+            template_response = self.db_client.client.table("templates").select(
+                "id, doc_type, variation, file_url, info_json"
+            ).eq("id", template_id).single().execute()
+            
+            if not template_response.data:
+                raise Exception(f"Template with ID {template_id} not found")
+            
+            template_data = template_response.data
+            
+            # Extract required fields from info_json
+            info_json = template_data.get("info_json", {})
+            template_required_fields = info_json.get("required_fields", {})
+            
+            print(f"🔍 [FIND_TEMPLATE] Template found - Type: {template_data['doc_type']}, Variation: {template_data['variation']}")
+            print(f"🔍 [FIND_TEMPLATE] Required fields: {list(template_required_fields.keys())}")
+            
+            # Find the latest user upload where templatable is true
+            latest_templatable_upload = None
+            for upload in reversed(state.user_uploads):  # Check from most recent
+                if upload.is_templatable:
+                    latest_templatable_upload = upload
+                    break
+            
+            if not latest_templatable_upload:
+                raise Exception("No templatable upload found in user uploads")
+            
+            print(f"🔍 [FIND_TEMPLATE] Using upload: {latest_templatable_upload.filename}")
+            
+            # Initialize fields with FieldMetadata for each required field
+            fields = {}
+            for field_key in template_required_fields.keys():
+                fields[field_key] = FieldMetadata(
+                    value="",                    # Empty value initially
+                    value_status="pending",      # Status is pending
+                    translated_value=None,       # No translation initially
+                    translated_status="pending"  # Translation status is pending
+                )
+            
+            # Update CurrentDocumentInWorkflow state
+            state.current_document_in_workflow_state.file_id = latest_templatable_upload.file_id
+            state.current_document_in_workflow_state.base_file_public_url = latest_templatable_upload.public_url
+            state.current_document_in_workflow_state.template_id = template_id
+            state.current_document_in_workflow_state.template_file_public_url = template_data["file_url"]
+            state.current_document_in_workflow_state.template_required_fields = template_required_fields
+            state.current_document_in_workflow_state.fields = fields  # Use the new fields structure
+            
+            # Create success message
+            success_message = (
+                f"✅ Found matching template!\n\n"
+                f"📋 Document Type: {template_data['doc_type']}\n\n"
+                f"🔧 Variation: {template_data['variation']}\n\n"
+                f"📝 Required Fields: {len(template_required_fields)} fields to extract\n\n"
+                f"📄 Processing: {latest_templatable_upload.filename}"
+            )
+            
+            success_msg = AIMessage(content=success_message)
+            state.messages.append(success_msg)
+            
+            # Create success message in database
             self.db_client.create_message(
                 conversation_id=state.conversation_id,
                 sender="assistant",
                 kind="text",
                 body=json.dumps({
-                    "text": "🔍 Finding the best matching template for your document..."
+                    "text": success_message
+                }),
+            )
+
+            save_agent_state(self.db_client, state.conversation_id, state)
+            save_current_document_in_workflow_state(self.db_client, state.conversation_id, state)
+            
+            print(f"🔍 [FIND_TEMPLATE] Successfully configured document workflow")
+            print(f"🔍 [FIND_TEMPLATE] Initialized {len(fields)} fields with FieldMetadata structure")
+            
+        except Exception as e:
+            print(f"🔍 [FIND_TEMPLATE] ERROR: {str(e)}")
+            log.exception(f"Error finding template match: {e}")
+        
+            # Store empty template info on error
+            state.current_document_in_workflow_state.template_id = ""
+            state.current_document_in_workflow_state.template_required_fields = {}
+            state.current_document_in_workflow_state.fields = {}  # Empty fields dict
+        
+            error_msg = AIMessage(content="⚠️ Unable to find a matching template. Manual processing may be required.")
+            state.messages.append(error_msg)
+        
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "⚠️ Unable to find a matching template. Manual processing may be required."
                 }),
             )
         
-            # Mark this step as done
-            state.steps_done.append("find_template")
+            state.workflow_status = WorkflowStatus.FAILED
             
-            try:
-                # Hardcoded template ID
-                template_id = "9fc0c5fc-2885-4d58-ba0f-4711244eb7df"
-                
-                # Get template data from Supabase
-                print(f"🔍 [FIND_TEMPLATE] Fetching template data for ID: {template_id}")
-                
-                template_response = self.db_client.client.table("templates").select(
-                    "id, doc_type, variation, file_url, info_json"
-                ).eq("id", template_id).single().execute()
-                
-                if not template_response.data:
-                    raise Exception(f"Template with ID {template_id} not found")
-                
-                template_data = template_response.data
-                
-                # Extract required fields from info_json
-                info_json = template_data.get("info_json", {})
-                template_required_fields = info_json.get("required_fields", {})
-                
-                print(f"🔍 [FIND_TEMPLATE] Template found - Type: {template_data['doc_type']}, Variation: {template_data['variation']}")
-                print(f"🔍 [FIND_TEMPLATE] Required fields: {list(template_required_fields.keys())}")
-                
-                # Find the latest user upload where templatable is true
-                latest_templatable_upload = None
-                for upload in reversed(state.user_uploads):  # Check from most recent
-                    if upload.is_templatable:
-                        latest_templatable_upload = upload
-                        break
-                
-                if not latest_templatable_upload:
-                    raise Exception("No templatable upload found in user uploads")
-                
-                print(f"🔍 [FIND_TEMPLATE] Using upload: {latest_templatable_upload.filename}")
-                
-                # Initialize filled_fields and translated_fields with empty values for each required field
-                filled_fields = {field_key: "" for field_key in template_required_fields.keys()}
-                translated_fields = {field_key: "" for field_key in template_required_fields.keys()}
-                
-                # Update CurrentDocumentInWorkflow state
-                state.current_document_in_workflow_state.file_id = latest_templatable_upload.file_id
-                state.current_document_in_workflow_state.base_file_public_url = latest_templatable_upload.public_url
-                state.current_document_in_workflow_state.template_id = template_id
-                state.current_document_in_workflow_state.template_file_public_url = template_data["file_url"]
-                state.current_document_in_workflow_state.template_required_fields = template_required_fields
-                state.current_document_in_workflow_state.filled_fields = filled_fields
-                state.current_document_in_workflow_state.translated_fields = translated_fields
-                
-                # Create success message
-                success_message = (
-                    f"✅ Found matching template!\n\n"
-                    f"📋 Document Type: {template_data['doc_type']}\n\n"
-                    f"🔧 Variation: {template_data['variation']}\n\n"
-                    f"📝 Required Fields: {len(template_required_fields)} fields to extract\n\n"
-                    f"📄 Processing: {latest_templatable_upload.filename}"
-                )
-                
-                success_msg = AIMessage(content=success_message)
-                state.messages.append(success_msg)
-                
-                # Create success message in database
-                self.db_client.create_message(
-                    conversation_id=state.conversation_id,
-                    sender="assistant",
-                    kind="text",
-                    body=json.dumps({
-                        "text": success_message
-                    }),
-                )
-
-                save_agent_state(self.db_client, state.conversation_id, state)
-                save_current_document_in_workflow_state(self.db_client, state.conversation_id, state)
-                
-                print(f"🔍 [FIND_TEMPLATE] Successfully configured document workflow")
-                print(f"🔍 [FIND_TEMPLATE] Initialized {len(filled_fields)} filled_fields and {len(translated_fields)} translated_fields")
-                
-            except Exception as e:
-                print(f"🔍 [FIND_TEMPLATE] ERROR: {str(e)}")
-                log.exception(f"Error finding template match: {e}")
-            
-                # Store empty template info on error
-                state.current_document_in_workflow_state.template_id = ""
-                state.current_document_in_workflow_state.template_required_fields = {}
-                state.current_document_in_workflow_state.filled_fields = {}
-                state.current_document_in_workflow_state.translated_fields = {}
-            
-                error_msg = AIMessage(content="⚠️ Unable to find a matching template. Manual processing may be required.")
-                state.messages.append(error_msg)
-            
-                # Create error message in database
-                self.db_client.create_message(
-                    conversation_id=state.conversation_id,
-                    sender="assistant",
-                    kind="text",
-                    body=json.dumps({
-                        "text": "⚠️ Unable to find a matching template. Manual processing may be required."
-                    }),
-                )
-            
-                state.workflow_status = WorkflowStatus.FAILED
-                
-            print(f"🔍 [FIND_TEMPLATE] Completed")
-            return state
+        print(f"🔍 [FIND_TEMPLATE] Completed")
+        return state
 
     async def _extract_values_node(self, state: AgentState) -> AgentState:
-            """
-            Extract values from the document using OCR based on template requirements.
-            This calls the extract_values_from_document helper function directly.
-            """
-            print(f"📄 [EXTRACT_VALUES] Starting for conversation: {state.conversation_id}")
+        """
+        Extract values from the document using OCR based on template requirements.
+        This calls the extract_values_from_document helper function directly.
+        """
+        print(f"📄 [EXTRACT_VALUES] Starting for conversation: {state.conversation_id}")
+        
+        # Insert a message that we're extracting values from the document
+        extraction_msg = AIMessage(content="📄 Extracting values from the document using OCR...")
+        state.messages.append(extraction_msg)
+        
+        # Create message in database too
+        self.db_client.create_message(
+            conversation_id=state.conversation_id,
+            sender="assistant",
+            kind="text",
+            body=json.dumps({
+                "text": "📄 Extracting values from the document using OCR..."
+            }),
+        )
+        
+        # Mark this step as done
+        state.steps_done.append("extract_values")
+
+        try:
+            print(f"📄 [EXTRACT_VALUES] Calling extract values helper directly...")
+
+            # Import the extract values helper
+            from agent.functions.extract_values_node_helper import extract_values_from_document
+
+            # Validate that we have the required data in state
+            if not state.current_document_in_workflow_state.template_id:
+                raise ValueError("No template ID found in current document workflow state")
             
-            # Insert a message that we're extracting values from the document
-            extraction_msg = AIMessage(content="📄 Extracting values from the document using OCR...")
-            state.messages.append(extraction_msg)
+            if not state.current_document_in_workflow_state.base_file_public_url:
+                raise ValueError("No base file public URL found in current document workflow state")
             
-            # Create message in database too
+            template_id = state.current_document_in_workflow_state.template_id
+            base_file_url = state.current_document_in_workflow_state.base_file_public_url
+            
+            print(f"📄 [EXTRACT_VALUES] Using template_id: {template_id}")
+            print(f"📄 [EXTRACT_VALUES] Using base_file_url: {base_file_url}")
+
+            # Call the extraction function
+            extraction_result = await extract_values_from_document(
+                template_id=template_id,
+                base_file_public_url=base_file_url
+            )
+            
+            # Store the extracted fields in state using the new FieldMetadata structure
+            if extraction_result.get("success", False):
+                extracted_fields = extraction_result.get("extracted_ocr", {})
+                
+                # Update existing fields with extracted values
+                for field_key, field_data in extracted_fields.items():
+                    if field_key in state.current_document_in_workflow_state.fields:
+                        # Update the existing FieldMetadata with the extracted value
+                        state.current_document_in_workflow_state.fields[field_key].value = field_data.get("value", "")
+                        state.current_document_in_workflow_state.fields[field_key].value_status = "ocr"
+                    else:
+                        # Create new FieldMetadata for fields not previously in the template
+                        from agent.agent_state import FieldMetadata
+                        state.current_document_in_workflow_state.fields[field_key] = FieldMetadata(
+                            value=field_data.get("value", ""),
+                            value_status="ocr"
+                        )
+                
+                print(f"📄 [EXTRACT_VALUES] Successfully extracted {len(extracted_fields)} fields")
+                print(f"📄 [EXTRACT_VALUES] Updated fields with OCR values: {len(extracted_fields)} fields")
+                
+                # Create detailed summary of extraction results
+                missing_fields = extraction_result.get("missing_value_keys", {})
+                
+                doc_type = extraction_result.get("doc_type", "unknown")
+                variation = extraction_result.get("variation", "standard")
+                
+                summary_parts = [
+                    f"✅ **Value Extraction Complete**\n",
+                    f"• **Document Type**: {doc_type.replace('_', ' ').title()}\n",
+                    f"• **Variation**: {variation.replace('_', ' ').title()}\n\n",
+                    f"• **Fields Extracted**: {len(extracted_fields)} out of {len(extracted_fields) + len(missing_fields)} total fields\n\n",
+                ]
+                
+                # Show extracted fields summary
+                if extracted_fields:
+                    summary_parts.append("\n\n**📋 Successfully Extracted Fields:**\n\n")
+                    for field_key, field_data in extracted_fields.items():
+                        # Clean up the field key for display
+                        clean_key = field_key.strip('{}')
+                        label = field_data.get("label", clean_key)
+                        # Get the value from the field_data dictionary
+                        field_value = field_data.get("value", "")
+                        # Truncate long values for display
+                        display_value = str(field_value)[:50] + "..." if len(str(field_value)) > 50 else str(field_value)
+                        summary_parts.append(f"• **{label}**: {display_value}\n\n")
+                
+                # Show missing fields if any
+                if missing_fields:
+                    summary_parts.append(f"\n\n**⚠️ Missing Fields ({len(missing_fields)}):**\n\n")
+                    for field_key, field_data in missing_fields.items():
+                        clean_key = field_key.strip('{}')
+                        field_label = field_data.get("label", clean_key)
+                        summary_parts.append(f"• **{clean_key}**: {field_label}\n\n")
+                    summary_parts.append("\n\n*These fields were not found in the document or were unclear during OCR processing. Please manually add them*\n\n")
+                
+                # Join all parts and remove any trailing newlines, then ensure single trailing newline
+                response_text = "".join(summary_parts).rstrip() + "\n\n"
+
+                # Save the agent state with the extracted fields
+                save_agent_state(self.db_client, state.conversation_id, state)
+                
+                # Set workflow status to waiting for confirmation
+                state.workflow_status = WorkflowStatus.IN_PROGRESS
+                
+            else:
+                # Handle extraction failure
+                error_msg = extraction_result.get("error", "Unknown extraction error")
+                response_text = f"❌ **Value Extraction Failed**\n\n\nError: {error_msg}"
+                
+                # If there's a raw response, include it for debugging
+                if extraction_result.get("raw_response"):
+                    response_text += f"\n\n*Debug Info*: {extraction_result['raw_response'][:200]}..."
+                
+                # Clear all field values on failure but keep the field structure
+                for field_key in state.current_document_in_workflow_state.fields:
+                    state.current_document_in_workflow_state.fields[field_key].value = ""
+                    state.current_document_in_workflow_state.fields[field_key].value_status = "pending"
+                
+                state.workflow_status = WorkflowStatus.FAILED
+            
+            # Create the response message
+            summary_msg = AIMessage(content=response_text)
+            state.messages.append(summary_msg)
+            
+            # Create message in database
             self.db_client.create_message(
                 conversation_id=state.conversation_id,
                 sender="assistant",
                 kind="text",
                 body=json.dumps({
-                    "text": "📄 Extracting values from the document using OCR..."
+                    "text": response_text
+                }),
+            )
+
+            caution_msg_text = "Please double check the values extracted from the document using our interactive document forms editor at the upper right. "
+            caution_ai_msg = AIMessage(content=caution_msg_text)
+            state.messages.append(caution_ai_msg)
+
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": caution_msg_text
                 }),
             )
             
-            # Mark this step as done
-            state.steps_done.append("extract_values")
-
-            try:
-                print(f"📄 [EXTRACT_VALUES] Calling extract values helper directly...")
-
-                # Import the extract values helper
-                from agent.functions.extract_values_node_helper import extract_values_from_document
-
-                # Validate that we have the required data in state
-                if not state.current_document_in_workflow_state.template_id:
-                    raise ValueError("No template ID found in current document workflow state")
-                
-                if not state.current_document_in_workflow_state.base_file_public_url:
-                    raise ValueError("No base file public URL found in current document workflow state")
-                
-                template_id = state.current_document_in_workflow_state.template_id
-                base_file_url = state.current_document_in_workflow_state.base_file_public_url
-                
-                print(f"📄 [EXTRACT_VALUES] Using template_id: {template_id}")
-                print(f"📄 [EXTRACT_VALUES] Using base_file_url: {base_file_url}")
-
-                # Call the extraction function
-                extraction_result = await extract_values_from_document(
-                    template_id=template_id,
-                    base_file_public_url=base_file_url
-                )
-                
-                # Store the extracted fields in state
-                if extraction_result.get("success", False):
-                    state.current_document_in_workflow_state.extracted_fields_from_raw_ocr = extraction_result.get("extracted_ocr", {})
-                    
-                    # Populate filled_fields with extracted values, adding [UNEDITED] tag
-                    extracted_fields = state.current_document_in_workflow_state.extracted_fields_from_raw_ocr
-                    for field_key, field_value in extracted_fields.items():
-                        # Add [UNEDITED] tag to indicate this value hasn't been manually reviewed
-                        state.current_document_in_workflow_state.filled_fields[field_key] = f"{field_value} [UNEDITED]"
-                    
-                    print(f"📄 [EXTRACT_VALUES] Successfully extracted {len(extracted_fields)} fields")
-                    print(f"📄 [EXTRACT_VALUES] Populated filled_fields with {len(state.current_document_in_workflow_state.filled_fields)} fields")
-                    
-                    # Create detailed summary of extraction results
-                    missing_fields = extraction_result.get("missing_value_keys", {})
-                    
-                    doc_type = extraction_result.get("doc_type", "unknown")
-                    variation = extraction_result.get("variation", "standard")
-                    
-                    summary_parts = [
-                        f"✅ **Value Extraction Complete**\n",
-                        f"• **Document Type**: {doc_type.replace('_', ' ').title()}\n",
-                        f"• **Variation**: {variation.replace('_', ' ').title()}\n\n",
-                        f"• **Fields Extracted**: {len(extracted_fields)} out of {len(extracted_fields) + len(missing_fields)} total fields\n\n",
-                    ]
-                    
-                    # Show extracted fields summary
-                    if extracted_fields:
-                        summary_parts.append("\n\n**📋 Successfully Extracted Fields:**\n\n")
-                        for field_key, field_value in extracted_fields.items():
-                            # Clean up the field key for display
-                            clean_key = field_key.strip('{}')
-                            # Truncate long values for display
-                            display_value = str(field_value)[:50] + "..." if len(str(field_value)) > 50 else str(field_value)
-                            summary_parts.append(f"• **{clean_key}**: {display_value}\n\n")
-                    
-                    # Show missing fields if any
-                    if missing_fields:
-                        summary_parts.append(f"\n\n**⚠️ Missing Fields ({len(missing_fields)}):**\n\n")
-                        for field_key, field_description in missing_fields.items():
-                            clean_key = field_key.strip('{}')
-                            summary_parts.append(f"• **{clean_key}**: {field_description}\n\n")
-                        summary_parts.append("\n\n*These fields were not found in the document or were unclear during OCR processing. Please manually add them*\n\n")
-                    
-                    # Join all parts and remove any trailing newlines, then ensure single trailing newline
-                    response_text = "".join(summary_parts).rstrip() + "\n\n"
-
-                    # Save the agent state with the extracted fields
-                    save_agent_state(self.db_client, state.conversation_id, state)
-                    
-                    # Set workflow status to waiting for confirmation
-                    state.workflow_status = WorkflowStatus.IN_PROGRESS
-                    
-                else:
-                    # Handle extraction failure
-                    error_msg = extraction_result.get("error", "Unknown extraction error")
-                    response_text = f"❌ **Value Extraction Failed**\n\n\nError: {error_msg}"
-                    
-                    # If there's a raw response, include it for debugging
-                    if extraction_result.get("raw_response"):
-                        response_text += f"\n\n*Debug Info*: {extraction_result['raw_response'][:200]}..."
-                    
-                    state.current_document_in_workflow_state.extracted_fields_from_raw_ocr = {}
-                    state.current_document_in_workflow_state.filled_fields = {}
-                    state.workflow_status = WorkflowStatus.FAILED
-                
-                # Create the response message
-                summary_msg = AIMessage(content=response_text)
-                state.messages.append(summary_msg)
-                
-                # Create message in database
-                self.db_client.create_message(
-                    conversation_id=state.conversation_id,
-                    sender="assistant",
-                    kind="text",
-                    body=json.dumps({
-                        "text": response_text
-                    }),
-                )
-
-                caution_msg_text = "Please double check the values extracted from the document using our interactive document forms editor at the upper right. "
-                caution_ai_msg = AIMessage(content=caution_msg_text)
-                state.messages.append(caution_ai_msg)
-
-                self.db_client.create_message(
-                    conversation_id=state.conversation_id,
-                    sender="assistant",
-                    kind="text",
-                    body=json.dumps({
-                        "text": caution_msg_text
-                    }),
-                )
-                
-                print(f"📄 [EXTRACT_VALUES] Extraction process completed")
-                
-            except Exception as e:
-                print(f"❌ [EXTRACT_VALUES] Error during extraction: {str(e)}")
-                error_msg = AIMessage(content=f"❌ Error extracting values from document: {str(e)}")
-                state.messages.append(error_msg)
-                
-                # Create error message in database
-                self.db_client.create_message(
-                    conversation_id=state.conversation_id,
-                    sender="assistant",
-                    kind="text",
-                    body=json.dumps({
-                        "text": f"❌ Error extracting values from document: {str(e)}"
-                    }),
-                )
-                
-                # Clear extracted fields on error
-                state.current_document_in_workflow_state.extracted_fields_from_raw_ocr = {}
-                state.current_document_in_workflow_state.filled_fields = {}
-                state.workflow_status = WorkflowStatus.FAILED
+            print(f"📄 [EXTRACT_VALUES] Extraction process completed")
             
-            return state
+        except Exception as e:
+            print(f"❌ [EXTRACT_VALUES] Error during extraction: {str(e)}")
+            error_msg = AIMessage(content=f"❌ Error extracting values from document: {str(e)}")
+            state.messages.append(error_msg)
+            
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": f"❌ Error extracting values from document: {str(e)}"
+                }),
+            )
+            
+            # Clear all field values on error but keep the field structure
+            for field_key in state.current_document_in_workflow_state.fields:
+                state.current_document_in_workflow_state.fields[field_key].value = ""
+                state.current_document_in_workflow_state.fields[field_key].value_status = "pending"
+            
+            state.workflow_status = WorkflowStatus.FAILED
+        
+        return state
 
+    async def _finalize_response(self, state: AgentState) -> AgentState:
+        if "finalize" not in state.steps_done:
+            state.steps_done.append("finalize")
+
+        state.context["final_response"] = self._extract_final_response(state.messages)
+        if state.workflow_status != WorkflowStatus.FAILED:
+            state.workflow_status = WorkflowStatus.IN_PROGRESS
+        return state
+
+    async def _ask_user_desired_language_node(self, state: AgentState) -> AgentState:
+        """
+        Ask the user what language they want to translate the document to.
+        This node is reached when we have a templatable document but no translate_to language specified.
+        """
+        print(f"🌐 [ASK_LANGUAGE] Starting for conversation: {state.conversation_id}")
+        
+        # Mark this step as done
+        if "ask_user_desired_langauge" not in state.steps_done:
+            state.steps_done.append("ask_user_desired_langauge")
+        
+        try:
+            # Get document info for context
+            doc_type = "document"
+            detected_language = "unknown"
+            
+            if state.latest_upload and state.latest_upload.analysis:
+                analysis = state.latest_upload.analysis
+                doc_type = analysis.get("doc_type", "document").replace("_", " ").title()
+                detected_language = analysis.get("detected_language", "unknown").replace("_", " ").title()
+            
+            # Create message asking for desired language
+            language_prompt = (
+                f"🌐 **Let me try to find existing template from the database**\n\n"
+                f"I've analyzed your **{doc_type}** (currently in **{detected_language}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
+                f"**To try and find the template of this document, I would need to know the desired language, What language would you like me to translate it to?**\n\n"
+                f"Please specify your desired target language, and I'll proceed with finding the appropriate template."
+            )
+            
+            language_msg = AIMessage(content=language_prompt)
+            state.messages.append(language_msg)
+            
+            # Create message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": language_prompt
+                }),
+            )
+            
+            # Set workflow status to waiting for user input
+            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
+            
+            print(f"🌐 [ASK_LANGUAGE] Language prompt sent successfully")
+            
+        except Exception as e:
+            print(f"🌐 [ASK_LANGUAGE] ERROR: {str(e)}")
+            log.exception(f"Error asking for desired language: {e}")
+            
+            error_msg = AIMessage(content="⚠️ Please specify what language you'd like me to translate your document to.")
+            state.messages.append(error_msg)
+            
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "⚠️ Please specify what language you'd like me to translate your document to."
+                }),
+            )
+            
+            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
+
+        print(f"🌐 [ASK_LANGUAGE] Completed")
+        return state
+    
+    # Helper Node
     def _merge_states(self, current_state: AgentState, db_state: AgentState) -> AgentState:
         """
-        Merge current state (with new data) into persisted state (from DB).
-        Priority: current_state values override db_state when current has non-empty values.
+        Merge the in-flight state (current_state) with the persisted copy (db_state).
+
+        Rules
+        -----
+        • New data in current_state always wins.  
+        • Lists → append only the items that are truly new.  
+        • Dicts → shallow-update (current keys overwrite, db keys preserved).  
+        • Nested `CurrentDocumentInWorkflow` → merge field-by-field.  
         """
-        print('merging states - current uploads:', len(current_state.user_uploads))
-    
-        # Start with db_state as base
         merged = db_state.model_copy(deep=True)
-    
-        # Merge messages (only new ones)
-        delta = current_state.messages[len(db_state.messages):]
-        merged.messages.extend(delta)
-        
-        # Merge conversation_history (only new ones)
-        history_delta = current_state.conversation_history[len(db_state.conversation_history):]
-        merged.conversation_history.extend(history_delta)
-    
-        # Merge context
+
+        # ── 1.  Messages & conversation history ────────────────────────────
+        merged.messages.extend(current_state.messages[len(db_state.messages):])
+        merged.conversation_history.extend(
+            current_state.conversation_history[len(db_state.conversation_history):]
+        )
+
+        # ── 2.  Context ─────────────────────────────────────────────────────
         merged.context.update(current_state.context)
-    
-        # Merge user uploads (append new ones)
+
+        # ── 3.  Uploads ─────────────────────────────────────────────────────
         if current_state.user_uploads:
-            # Get the number of uploads already in db_state to find new ones
-            existing_count = len(merged.user_uploads)
-            new_uploads = current_state.user_uploads[existing_count:]
-            merged.user_uploads.extend(new_uploads)
-    
-        # Update translate_to if provided in current state
-        if current_state.translate_to and current_state.translate_to != merged.translate_to:
+            merged.user_uploads.extend(
+                current_state.user_uploads[len(db_state.user_uploads):]
+            )
+
+        # ── 4.  Top-level scalars ───────────────────────────────────────────
+        if current_state.translate_to:
             merged.translate_to = current_state.translate_to
-    
-        # Merge current_document_in_workflow_state
-        if current_state.current_document_in_workflow_state:
-            current_doc = current_state.current_document_in_workflow_state
-            merged_doc = merged.current_document_in_workflow_state
-            
-            # Update individual fields if they have values in current state
-            if current_doc.file_id and current_doc.file_id != merged_doc.file_id:
-                merged_doc.file_id = current_doc.file_id
-            if current_doc.base_file_public_url and current_doc.base_file_public_url != merged_doc.base_file_public_url:
-                merged_doc.base_file_public_url = current_doc.base_file_public_url
-            if current_doc.template_id and current_doc.template_id != merged_doc.template_id:
-                merged_doc.template_id = current_doc.template_id
-            if current_doc.template_file_public_url and current_doc.template_file_public_url != merged_doc.template_file_public_url:
-                merged_doc.template_file_public_url = current_doc.template_file_public_url
-            
-            # Merge dictionaries
-            merged_doc.template_required_fields.update(current_doc.template_required_fields)
-            merged_doc.extracted_fields_from_raw_ocr.update(current_doc.extracted_fields_from_raw_ocr)
-            merged_doc.filled_fields.update(current_doc.filled_fields)
-            merged_doc.translated_fields.update(current_doc.translated_fields)
-    
-        # Update current_document_version_id if provided
-        if current_state.current_document_version_id and current_state.current_document_version_id != merged.current_document_version_id:
-            merged.current_document_version_id = current_state.current_document_version_id
-    
-        # Update current_pending_node if provided
-        if current_state.current_pending_node and current_state.current_pending_node != merged.current_pending_node:
+
+        if current_state.current_pending_node:
             merged.current_pending_node = current_state.current_pending_node
-    
-        # Merge steps_done (append new ones, avoiding duplicates)
+
+        # ── 5.  Steps done ──────────────────────────────────────────────────
         for step in current_state.steps_done:
             if step not in merged.steps_done:
                 merged.steps_done.append(step)
-    
-        # Update workflow_status if it has changed
+
+        # ── 6.  Workflow status (let failures / completions bubble up) ──────
         if current_state.workflow_status != merged.workflow_status:
             merged.workflow_status = current_state.workflow_status
-    
+
+        # ── 7.  CurrentDocumentInWorkflow merge ────────────────────────────
+        cur_doc   = current_state.current_document_in_workflow_state
+        merged_doc = merged.current_document_in_workflow_state
+
+        # simple scalars
+        for attr in (
+            "file_id",
+            "base_file_public_url",
+            "template_id",
+            "template_file_public_url",
+            "current_document_version_public_url",
+        ):
+            val = getattr(cur_doc, attr, "")
+            if val and val != getattr(merged_doc, attr):
+                setattr(merged_doc, attr, val)
+
+        # translate_to inside the nested doc (separate from the top-level one)
+        if cur_doc.translate_to:
+            merged_doc.translate_to = cur_doc.translate_to
+
+        # dicts
+        merged_doc.template_required_fields.update(cur_doc.template_required_fields)
+
+        # FieldMetadata dict
+        if cur_doc.fields:
+            for key, field_md in cur_doc.fields.items():
+                if key not in merged_doc.fields:
+                    # brand-new field
+                    merged_doc.fields[key] = field_md
+                else:
+                    # update existing field – keep the latest non-pending info
+                    existing = merged_doc.fields[key]
+                    if field_md.value_status != "pending":
+                        existing.value = field_md.value
+                        existing.value_status = field_md.value_status
+                    if field_md.translated_status != "pending":
+                        existing.translated_value = field_md.translated_value
+                        existing.translated_status = field_md.translated_status
+
         return merged
-
-    async def _load_state_graph(self, state: AgentState) -> AgentState:
-        db_state = load_agent_state(self.db_client, state.conversation_id)
-        if db_state:
-            merged_state = self._merge_states(state, db_state)
-            return merged_state
-
-        # No existing row → just continue with the fresh state we were given
-        return state
-
-    async def _save_state_graph(self, state: AgentState) -> AgentState:
-        try:
-            save_agent_state(self.db_client, state.conversation_id, state)
-        except Exception as exc:
-            log.exception("save_state_graph failed: %s", exc)
-        return state
-
-    def _route_next(self, state: AgentState) -> str:
-        """
-        Decide what the next node should be using smart routing with fallback.
-        
-        This method now uses the SmartRouter if available, otherwise falls back
-        to the original rule-based routing logic.
-        """
-        # Try smart routing first if enabled and available
-        if self.use_smart_routing and self.smart_router:
-            try:
-                next_node = self.smart_router.route_next(state)
-                print(f"Smart router decision for conversation {state.conversation_id}: {next_node}")
-                return next_node
-            except Exception as e:
-                log.warning(f"Smart router failed for conversation {state.conversation_id}: {e}. Using fallback.")
-                # Continue to fallback routing below
 
     def _extract_final_response(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """Pick the most suitable message to surface to the UI."""
@@ -1043,14 +1079,56 @@ class LangGraphOrchestrator:
 
         return {"kind": "text", "text": "Task completed."}
 
-    async def _finalize_response(self, state: AgentState) -> AgentState:
-        if "finalize" not in state.steps_done:
-            state.steps_done.append("finalize")
+    def _state_summary(self, state: AgentState) -> str:
+        """Return a one-liner describing the high-level workflow state."""
+        current_doc = state.current_document_in_workflow_state
+        parts: list[str] = [f"Status: {state.workflow_status.value}"]
 
-        state.context["final_response"] = self._extract_final_response(state.messages)
-        if state.workflow_status != WorkflowStatus.FAILED:
-            state.workflow_status = WorkflowStatus.COMPLETED
-        return state
+        # ── Upload info ────────────────────────────────────────────────────
+        if state.latest_upload:
+            parts.append("Has upload")
+            if state.latest_upload.is_templatable:
+                parts.append("templatable")
+
+        # ── Desired language ───────────────────────────────────────────────
+        if state.translate_to:
+            parts.append(f"→ {state.translate_to}")
+
+        # ── Template ───────────────────────────────────────────────────────
+        if current_doc.template_id:
+            parts.append("template found")
+
+        # ── Field progress (new FieldMetadata-based logic) ─────────────────
+        if current_doc.fields:
+            ocr_cnt        = sum(1 for f in current_doc.fields.values() if f.value_status == "ocr")
+            filled_cnt     = sum(1 for f in current_doc.fields.values() if f.value_status in {"edited", "confirmed"})
+            translated_cnt = sum(1 for f in current_doc.fields.values() if f.translated_status in {"translated", "edited", "confirmed"})
+
+            if ocr_cnt:
+                parts.append(f"{ocr_cnt} fields OCR")
+            if filled_cnt:
+                parts.append(f"{filled_cnt} fields filled")
+            if translated_cnt:
+                parts.append(f"{translated_cnt} fields translated")
+
+        # ── Final document ─────────────────────────────────────────────────
+        if current_doc.current_document_version_public_url:
+            parts.append("document ready")
+
+        return " | ".join(parts)
+
+    def _apply_state_patch(self, state: AgentState, patch: Dict[str, Any]) -> None:
+        """
+        Apply the partial update coming from `update_agent_state` tool calls.
+        Simplified to handle only the explicit fields we want to support.
+        """
+        for key, val in patch.items():
+            if not hasattr(state, key):
+                # Silently skip anything not on AgentState
+                continue
+
+            # Default behaviour: let Pydantic handle the assignment
+            setattr(state, key, val)
 
     async def process_user_message(
         self, conversation_id: str, user_message: str, context: Dict[str, Any] | None
@@ -1176,48 +1254,3 @@ class LangGraphOrchestrator:
             "workflow_status": final.workflow_status.value,
             "steps_completed": len(final.steps_done),
         }
-
-    def _state_summary(self, state: AgentState) -> str:
-        """Generate a concise state summary for the system message."""
-        current_doc = state.current_document_in_workflow_state
-        
-        parts = []
-        parts.append(f"Status: {state.workflow_status.value}")
-        
-        if state.latest_upload:
-            parts.append("Has upload")
-            if state.latest_upload.is_templatable:
-                parts.append("templatable")
-        
-        if state.translate_to:
-            parts.append(f"→ {state.translate_to}")
-        
-        if current_doc.template_id:
-            parts.append("template found")
-        
-        if current_doc.extracted_fields_from_raw_ocr:
-            parts.append("fields extracted")
-        
-        if current_doc.filled_fields:
-            parts.append("fields filled")
-        
-        if current_doc.translated_fields:
-            parts.append("fields translated")
-        
-        if state.current_document_version_id:
-            parts.append("document ready")
-        
-        return " | ".join(parts)
-
-    def _apply_state_patch(self, state: AgentState, patch: Dict[str, Any]) -> None:
-        """
-        Apply the partial update coming from `update_agent_state` tool calls.
-        Simplified to handle only the explicit fields we want to support.
-        """
-        for key, val in patch.items():
-            if not hasattr(state, key):
-                # Silently skip anything not on AgentState
-                continue
-
-            # Default behaviour: let Pydantic handle the assignment
-            setattr(state, key, val)
