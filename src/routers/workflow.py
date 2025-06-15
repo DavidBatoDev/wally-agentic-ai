@@ -44,6 +44,14 @@ class UpdateWorkflowFieldsRequest(BaseModel):
     fields: Dict[str, FieldMetadataDict]
 
 
+class UpdateSingleFieldRequest(BaseModel):
+    field_key: str
+    value: str
+    value_status: str = "manual"
+    translated_value: Optional[str] = None
+    translated_status: str = "pending"
+
+
 # ────────────────────────────────────────────────── helpers
 def _guard_membership(conversation_id: str, current_user: User):
     """Ensure user has access to the conversation."""
@@ -243,6 +251,133 @@ async def get_workflow_template_mappings(
         )
 
 
+@router.patch("/{conversation_id}/field", response_model=Dict[str, Any])
+async def update_single_workflow_field(
+    conversation_id: UUID4,
+    request: UpdateSingleFieldRequest,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Update a single field in a conversation's workflow.
+    This is used for individual field updates from the DocumentCanvas.
+    Updates both workflows table and agent_state table.
+    """
+    try:
+        # ── membership / auth ---------------------------------------------------
+        _ = _guard_membership(str(conversation_id), current_user)
+
+        # ── load existing workflow ---------------------------------------------- 
+        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
+        
+        if not workflow:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No workflow found for this conversation"
+            )
+
+        # ── get current fields and update the specific field -------------------
+        current_fields = workflow.fields or {}
+        
+        # Convert FieldMetadata objects to serializable dictionaries
+        serialized_current_fields = {}
+        for field_name, field_data in current_fields.items():
+            if hasattr(field_data, 'value'):  # FieldMetadata object
+                serialized_current_fields[field_name] = {
+                    "value": field_data.value,
+                    "value_status": field_data.value_status,
+                    "translated_value": field_data.translated_value,
+                    "translated_status": field_data.translated_status
+                }
+            elif isinstance(field_data, dict):
+                serialized_current_fields[field_name] = field_data
+            else:
+                # Fallback for simple values
+                serialized_current_fields[field_name] = {
+                    "value": field_data,
+                    "value_status": "pending",
+                    "translated_value": None,
+                    "translated_status": "pending"
+                }
+        
+        # Update the specific field
+        updated_field = {
+            "value": request.value,
+            "value_status": request.value_status,
+            "translated_value": request.translated_value,
+            "translated_status": request.translated_status
+        }
+        
+        serialized_current_fields[request.field_key] = updated_field
+        
+        # ── update workflow in database -----------------------------------------
+        update_data = {
+            "fields": json.dumps(serialized_current_fields),
+            "updated_at": "now()"
+        }
+        
+        result = supabase_client.client.table("workflows").update(update_data).eq(
+            "conversation_id", str(conversation_id)
+        ).execute()
+        
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update workflow field"
+            )
+
+        # ── update agent_state table -------------------------------------------
+        try:
+            # Get current agent_state
+            agent_state_result = supabase_client.client.table("agent_state").select("state_data").eq(
+                "conversation_id", str(conversation_id)
+            ).execute()
+            
+            if agent_state_result.data:
+                current_state_data = agent_state_result.data[0].get("state_data", {})
+                
+                # Update the current_document_in_workflow_state.fields
+                if "current_document_in_workflow_state" not in current_state_data:
+                    current_state_data["current_document_in_workflow_state"] = {}
+                
+                if "fields" not in current_state_data["current_document_in_workflow_state"]:
+                    current_state_data["current_document_in_workflow_state"]["fields"] = {}
+                
+                # Update the specific field in agent_state
+                current_state_data["current_document_in_workflow_state"]["fields"][request.field_key] = updated_field
+                
+                # Update agent_state table
+                agent_state_update_result = supabase_client.client.table("agent_state").update({
+                    "state_data": current_state_data,
+                    "updated_at": "now()"
+                }).eq("conversation_id", str(conversation_id)).execute()
+                
+                if not agent_state_update_result.data:
+                    print(f"Warning: Failed to update agent_state for conversation {conversation_id}")
+            else:
+                print(f"Warning: No agent_state found for conversation {conversation_id}")
+                
+        except Exception as agent_state_error:
+            print(f"Error updating agent_state for conversation {conversation_id}: {agent_state_error}")
+            # Don't fail the entire request if agent_state update fails
+            # The workflow table update was successful, so we can continue
+
+        return {
+            "success": True,
+            "message": f"Field '{request.field_key}' updated successfully",
+            "field_key": request.field_key,
+            "updated_field": updated_field,
+            "all_fields": serialized_current_fields
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"Error updating single workflow field for conversation {conversation_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update workflow field: {exc}",
+        )
+
 @router.patch("/{conversation_id}/fields", response_model=Dict[str, Any])
 async def update_workflow_fields(
     conversation_id: UUID4,
@@ -250,7 +385,8 @@ async def update_workflow_fields(
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Update the fields for a conversation's workflow.
+    Update multiple fields for a conversation's workflow.
+    Updates both workflows table and agent_state table.
     """
     try:
         # ── membership / auth ---------------------------------------------------
@@ -275,7 +411,7 @@ async def update_workflow_fields(
             "updated_at": "now()"
         }
         
-        result = supabase_client.table("workflows").update(update_data).eq(
+        result = supabase_client.client.table("workflows").update(update_data).eq(
             "conversation_id", str(conversation_id)
         ).execute()
         
@@ -284,6 +420,39 @@ async def update_workflow_fields(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to update workflow fields"
             )
+
+        # ── update agent_state table -------------------------------------------
+        try:
+            # Get current agent_state
+            agent_state_result = supabase_client.client.table("agent_state").select("state_data").eq(
+                "conversation_id", str(conversation_id)
+            ).execute()
+            
+            if agent_state_result.data:
+                current_state_data = agent_state_result.data[0].get("state_data", {})
+                
+                # Update the current_document_in_workflow_state.fields
+                if "current_document_in_workflow_state" not in current_state_data:
+                    current_state_data["current_document_in_workflow_state"] = {}
+                
+                # Replace all fields in agent_state with the updated fields
+                current_state_data["current_document_in_workflow_state"]["fields"] = serialized_fields
+                
+                # Update agent_state table
+                agent_state_update_result = supabase_client.client.table("agent_state").update({
+                    "state_data": current_state_data,
+                    "updated_at": "now()"
+                }).eq("conversation_id", str(conversation_id)).execute()
+                
+                if not agent_state_update_result.data:
+                    print(f"Warning: Failed to update agent_state for conversation {conversation_id}")
+            else:
+                print(f"Warning: No agent_state found for conversation {conversation_id}")
+                
+        except Exception as agent_state_error:
+            print(f"Error updating agent_state for conversation {conversation_id}: {agent_state_error}")
+            # Don't fail the entire request if agent_state update fails
+            # The workflow table update was successful, so we can continue
 
         return {
             "success": True,

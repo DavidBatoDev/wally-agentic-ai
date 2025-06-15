@@ -1,6 +1,7 @@
 # backend/src/db/workflow_db.py
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from datetime import datetime, timezone
+import json
 
 from src.agent.agent_state import AgentState, CurrentDocumentInWorkflow, FieldMetadata
 from src.db.db_client import SupabaseClient
@@ -181,6 +182,19 @@ def load_workflow_state(
         # Convert fields JSON back to FieldMetadata objects
         fields_dict = {}
         fields_data = record.get("fields", {}) or {}
+        
+        # Handle case where fields might be stored as JSON string
+        if isinstance(fields_data, str):
+            try:
+                fields_data = json.loads(fields_data)
+            except json.JSONDecodeError:
+                print(f"[load_workflow_state] Failed to parse fields JSON: {fields_data}")
+                fields_data = {}
+        
+        # Ensure fields_data is a dictionary
+        if not isinstance(fields_data, dict):
+            fields_data = {}
+        
         for field_name, field_data in fields_data.items():
             if isinstance(field_data, dict):
                 fields_dict[field_name] = FieldMetadata(
@@ -211,7 +225,6 @@ def load_workflow_state(
         print(f"[load_workflow_state] Error: {e}")
         return None
 
-
 def load_workflow_by_conversation(
     db_client: SupabaseClient, 
     conversation_id: str
@@ -238,6 +251,19 @@ def load_workflow_by_conversation(
         # Convert fields JSON back to FieldMetadata objects
         fields_dict = {}
         fields_data = record.get("fields", {}) or {}
+        
+        # Handle case where fields might be stored as JSON string
+        if isinstance(fields_data, str):
+            try:
+                fields_data = json.loads(fields_data)
+            except json.JSONDecodeError:
+                print(f"[load_workflow_by_conversation] Failed to parse fields JSON: {fields_data}")
+                fields_data = {}
+        
+        # Ensure fields_data is a dictionary
+        if not isinstance(fields_data, dict):
+            fields_data = {}
+        
         for field_name, field_data in fields_data.items():
             if isinstance(field_data, dict):
                 fields_dict[field_name] = FieldMetadata(
@@ -268,7 +294,6 @@ def load_workflow_by_conversation(
         print(f"[load_workflow_by_conversation] Error: {e}")
         return None
 
-
 def get_workflow_template_mappings_by_conversation(
     db_client: SupabaseClient, 
     conversation_id: str
@@ -296,7 +321,6 @@ def get_workflow_template_mappings_by_conversation(
         print(f"[get_workflow_template_mappings_by_conversation] Error: {e}")
         return None
 
-
 def get_workflow_with_template_mappings_by_conversation(
     db_client: SupabaseClient, 
     conversation_id: str
@@ -323,6 +347,19 @@ def get_workflow_with_template_mappings_by_conversation(
         # Convert fields JSON back to FieldMetadata objects
         fields_dict = {}
         fields_data = record.get("fields", {}) or {}
+        
+        # Handle case where fields might be stored as JSON string
+        if isinstance(fields_data, str):
+            try:
+                fields_data = json.loads(fields_data)
+            except json.JSONDecodeError:
+                print(f"[get_workflow_with_template_mappings_by_conversation] Failed to parse fields JSON: {fields_data}")
+                fields_data = {}
+        
+        # Ensure fields_data is a dictionary
+        if not isinstance(fields_data, dict):
+            fields_data = {}
+        
         for field_name, field_data in fields_data.items():
             if isinstance(field_data, dict):
                 fields_dict[field_name] = FieldMetadata(
