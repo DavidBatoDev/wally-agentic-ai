@@ -114,8 +114,11 @@ def save_current_document_in_workflow_state(
             "fields": fields_json,
             "base_file_public_url": current_doc.base_file_public_url or None,
             "template_file_public_url": current_doc.template_file_public_url or None,
+            "template_translated_id": getattr(current_doc, 'template_translated_id', None),
+            "template_translated_file_public_url": getattr(current_doc, 'template_translated_file_public_url', None),
             "template_required_fields": current_doc.template_required_fields or {},
             "translate_to": current_doc.translate_to or None,
+            "translate_from": getattr(current_doc, 'translate_from', None),
             "current_document_version_public_url": current_doc.current_document_version_public_url or None,
             "origin_template_mappings": origin_template_mappings,
         }
@@ -213,9 +216,12 @@ def load_workflow_state(
             base_file_public_url=record.get("base_file_public_url", ""),
             template_id=record.get("template_id", ""),
             template_file_public_url=record.get("template_file_public_url", ""),
+            template_translated_id=record.get("template_translated_id"),
+            template_translated_file_public_url=record.get("template_translated_file_public_url"),
             template_required_fields=record.get("template_required_fields", {}),
             fields=fields_dict,
             translate_to=record.get("translate_to"),
+            translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         
@@ -282,9 +288,12 @@ def load_workflow_by_conversation(
             base_file_public_url=record.get("base_file_public_url", ""),
             template_id=record.get("template_id", ""),
             template_file_public_url=record.get("template_file_public_url", ""),
+            template_translated_id=record.get("template_translated_id"),
+            template_translated_file_public_url=record.get("template_translated_file_public_url"),
             template_required_fields=record.get("template_required_fields", {}),
             fields=fields_dict,
             translate_to=record.get("translate_to"),
+            translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         
@@ -378,9 +387,12 @@ def get_workflow_with_template_mappings_by_conversation(
             base_file_public_url=record.get("base_file_public_url", ""),
             template_id=record.get("template_id", ""),
             template_file_public_url=record.get("template_file_public_url", ""),
+            template_translated_id=record.get("template_translated_id"),
+            template_translated_file_public_url=record.get("template_translated_file_public_url"),
             template_required_fields=record.get("template_required_fields", {}),
             fields=fields_dict,
             translate_to=record.get("translate_to"),
+            translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         

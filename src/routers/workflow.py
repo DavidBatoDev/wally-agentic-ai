@@ -79,9 +79,12 @@ def _serialize_workflow(workflow_obj, template_mappings=None) -> Dict[str, Any]:
         "base_file_public_url": workflow_obj.base_file_public_url,
         "template_id": workflow_obj.template_id,
         "template_file_public_url": workflow_obj.template_file_public_url,
+        "template_translated_id": getattr(workflow_obj, 'template_translated_id', None),
+        "template_translated_file_public_url": getattr(workflow_obj, 'template_translated_file_public_url', None),
         "template_required_fields": workflow_obj.template_required_fields,
         "fields": workflow_obj.fields,
         "translate_to": workflow_obj.translate_to,
+        "translate_from": getattr(workflow_obj, 'translate_from', None),
         "current_document_version_public_url": workflow_obj.current_document_version_public_url,
     }
     

@@ -48,6 +48,8 @@ class CurrentDocumentInWorkflow(BaseModel):
     base_file_public_url: str = ""  # publicly accessible URL of the document (Will get the CurrentDocumentInWorkflow if a find_template_node is found)
     template_id: str = ""  # ID of the template used, if any (Will get this using the find_template_node)
     template_file_public_url: str = "" # template file url (Will get this using the find_template_node)
+    template_translated_id: Optional[str] = ""  # ID of the translated template, if applicable (Will get this using the find_template_node)
+    template_translated_file_public_url: Optional[str] = "" # template file url (Will get this using the find_template_node)
     template_required_fields: Dict[str, Any] = Field(default_factory=dict) # require (Will get this using the find_template_node)
     fields: Dict[str, FieldMetadata] = Field(default_factory=dict) # "{birth_date}": FieldMetadata(value="2023-01-01", value_status="confirmed")
     translate_to: Optional[str] = None  # Language to translate the document to, if applicable
