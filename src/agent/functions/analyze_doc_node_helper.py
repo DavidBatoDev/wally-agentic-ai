@@ -85,44 +85,6 @@ def _determine_doc_type(mime_type: str) -> str:
         return 'unknown'
 
 
-def _is_psa_or_birth_certificate_templatable(doc_classification: str, page_count: int, confidence: float) -> bool:
-    """
-    Determine if document is templatable based on stricter PSA/birth certificate criteria.
-    
-    Args:
-        doc_classification: The classified document type
-        page_count: Number of pages in the document
-        confidence: Confidence level of the analysis
-        
-    Returns:
-        bool: True if document meets templatable criteria
-    """
-    # Must be 1-2 pages only
-    if page_count is None or page_count < 1 or page_count > 2:
-        log.debug("Document not templatable: page_count=%s (must be 1-2 pages)", page_count)
-        return False
-    
-    # Must have reasonable confidence in analysis
-    if confidence < 0.5:
-        log.debug("Document not templatable: confidence=%.2f (must be >= 0.5)", confidence)
-        return False
-    
-    # Must be specifically PSA or birth certificate related
-    psa_birth_classifications = {
-        "psa", 
-        "birth_certificate",
-        "certificate"  # Keep this as it might catch PSA certificates
-    }
-    
-    if doc_classification.lower() not in psa_birth_classifications:
-        log.debug("Document not templatable: classification='%s' (must be PSA or birth certificate)", doc_classification)
-        return False
-    
-    log.debug("Document IS templatable: classification='%s', pages=%d, confidence=%.2f", 
-              doc_classification, page_count, confidence)
-    return True
-
-
 async def _download_file(url: str) -> bytes:
     """Download file from URL and return as bytes."""
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
@@ -147,6 +109,7 @@ Analyze this document thoroughly and provide a JSON response with the following 
 - doc_classification: classification like "psa", "birth_certificate", "death_certificate", "marriage_certificate", "id", "passport", "driver_license", "visa", "certificate", "diploma", "transcript", "contract", "agreement", "invoice", "receipt", "report", "letter", "form", "application", "prescription", "medical_document", "legal_document", "business_document", "academic_document", "official_document", "other"
 - is_psa_document: boolean indicating if this appears to be a PSA (Philippine Statistics Authority) document
 - has_psa_features: boolean indicating if document has PSA-specific features (security paper, official seals, QR codes, reference numbers, etc.)
+- is_templatable: boolean indicating if this PSA document contains actual personal data/values that can be extracted for templating (not blank forms)
 
 For the content_summary field, provide a comprehensive explanation that includes:
 1. What type of document this is and its primary purpose
@@ -159,7 +122,7 @@ For the content_summary field, provide a comprehensive explanation that includes
 
 Make the content_summary detailed and informative (aim for 300-500 characters) as it will be shown to users to help them understand what was detected in their document.
 
-SPECIAL FOCUS: Pay close attention to identifying PSA documents and birth certificates:
+SPECIAL FOCUS: Pay close attention to identifying PSA documents and determining if they are templatable:
 - Look for "PSA" text, logos, or watermarks
 - Check for security features like special paper texture, watermarks
 - Look for official seals, stamps, or government insignia
@@ -167,9 +130,30 @@ SPECIAL FOCUS: Pay close attention to identifying PSA documents and birth certif
 - Identify birth certificate specific fields (name, birth date, place of birth, parents' names, etc.)
 - Note any Philippine government formatting or standards
 
+CRITICAL FOR is_templatable DETERMINATION:
+- Set is_templatable to TRUE only if:
+  1. The document is clearly a PSA document (birth certificate, death certificate, marriage certificate, etc.)
+  2. AND the document contains actual filled-in personal information/values with real names, dates, places
+  3. AND you can see COMPLETED fields with actual data (not placeholders, templates, or variables like {name}, {date}, etc.)
+  4. AND the document appears to be 1-2 pages maximum
+  5. AND your confidence level is at least 0.6
+
+- Set is_templatable to FALSE if:
+  1. It's not a PSA document
+  2. OR it's a blank/empty form without personal data
+  3. OR it contains placeholder text, template variables (like {name}, {province}, etc.), or fill-in-the-blank formatting
+  4. OR it's a form template rather than a completed document
+  5. OR it's more than 2 pages
+  6. OR confidence is below 0.6
+  7. OR you cannot clearly identify actual completed personal information
+
+IMPORTANT: Pay special attention to distinguish between:
+- BLANK FORMS/TEMPLATES: Contains placeholders like {name}, {date}, empty fields, or template formatting → NOT templatable
+- COMPLETED DOCUMENTS: Contains actual names, real dates, filled-in information → Potentially templatable
+
 For page_count: Be very precise. Count actual document pages, not including blank pages or covers.
 
-IMPORTANT: Be extremely accurate about the page count and document classification. The system will use these values to determine if the document qualifies for template processing.
+IMPORTANT: Be extremely accurate about the page count, document classification, and especially the is_templatable determination. The system relies on your assessment to determine processing workflow.
 
 Return only valid JSON without any markdown formatting or additional text.
 """
@@ -286,12 +270,10 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
                 f"Key information and data fields have been identified for further processing."
             )
         
-        # Use improved templatable check specifically for PSA/birth certificates
-        is_templatable = _is_psa_or_birth_certificate_templatable(
-            doc_classification, 
-            page_count, 
-            confidence
-        )
+        # Let Gemini decide if the document is templatable based on PSA content with personal values
+        is_templatable = gemini_result.get("is_templatable", False)
+        
+        log.debug("Gemini determined is_templatable: %s for doc_classification: %s", is_templatable, doc_classification)
         
         # Build the final analysis result
         analysis_result = {

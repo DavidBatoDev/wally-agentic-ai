@@ -273,9 +273,9 @@ async def generate_field_descriptions_and_labels_with_image(keys: List[str], pdf
         ATTENDANT SECTION:
         - at1, at2, at3, at4, at5 = These are checkboxes for "ATTENDANT" types:
           * at1 = Physician checkbox → Label: "Attendant: Physician"
-          * at2 = Traditional midwife checkbox → Label: "Attendant: Traditional Midwife"
-          * at3 = Hilot checkbox → Label: "Attendant: Hilot"
-          * at4 = Others checkbox → Label: "Attendant: Others"
+          * at2 = Nurse checkbox → Label: "Attendant: Nurse"
+          * at3 = Traditional midwife checkbox → Label: "Attendant: Midwife"
+          * at4 = Hilot checkbox → Label: "Attendant: Hilot"
           * at5 = Others specify field → Label: "Attendant: Other (Specify)"
 
         MULTIPLE BIRTH SECTION:  
@@ -303,7 +303,8 @@ async def generate_field_descriptions_and_labels_with_image(keys: List[str], pdf
 
         INSTRUCTIONS:
         1. Analyze the visual layout in the images to confirm field positions
-        2. Use birth certificate form knowledge above to provide accurate labels and descriptions
+        2. Use birth certificate form knowledge above to provide accurate labels and descriptions, always double check it so that the description is accurate
+        For example in the area of 19b. Certificate of birth in this line: `I attended the birth of the child who was born alive at {{cob_t}} o’clock am/pm`, the {{cob_t}} stands for "Certificate of Birth Time" and should be labeled as such.
         3. Look for checkbox patterns, text input areas, and form sections
         4. Create concise, professional labels (e.g., "Weight at Birth", not "WEIGHT_AT_BIRTH")
         5. Provide specific descriptions about what should be entered/marked
@@ -489,7 +490,7 @@ def create_enhanced_fallback_descriptions_and_labels(keys: List[str]) -> Dict[st
         },
         '{cob_t}': {
             "label": "Certificate of Birth Time",
-            "description": "Number input field for total number of children born alive"
+            "description": "Certificate of Birth Time"
         }
     }
     
