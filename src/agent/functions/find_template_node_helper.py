@@ -1,329 +1,241 @@
 # backend/src/agent/functions/find_template_node_helper.py
 """
-Template matching client using Gemini API for finding the best template match.
+Template matching helper for finding original and translated template pairs.
 
-This module contains exactly one public coroutine, `find_template_match`, which
-fetches available templates from the database, cleans the data, and uses Gemini API
-to determine the best matching template based on the uploaded document analysis.
+This module provides the `find_template_match` function that:
+1. Analyzes the uploaded document's characteristics
+2. Finds the appropriate original template based on document type and source language
+3. Finds the corresponding translated template for the target language
+4. Returns structured template information for workflow processing
 
-* Uses Gemini 2.0 Flash model for template matching
-* Analyzes document against available templates
-* Returns template_id, template_required_fields, and process analysis
-* Environment variable `GEMINI_API_KEY` required for authentication
+The function searches the Supabase templates table and matches templates based on:
+- Document type (e.g., birth_certificate)
+- Language variations (source and target languages)
+- Template compatibility with the analyzed document
 """
 
 from __future__ import annotations
 
-import os
 import logging
-import json
-from typing import Any, Dict, List, Optional
-import httpx
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from typing import Dict, Any, Tuple, Optional
+from ..agent_state import AgentState, Upload
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+# Language mapping for template matching
+LANGUAGE_TO_TEMPLATE_VARIATION = {
+    "en": "English",
+    "english": "English", 
+    "el": "Greek",
+    "greek": "Greek",
+    "gr": "Greek",
+    "es": "Spanish",
+    "spanish": "Spanish",
+    "fr": "French", 
+    "french": "French",
+    "de": "German",
+    "german": "German",
+    "it": "Italian",
+    "italian": "Italian",
+    "pt": "Portuguese",
+    "portuguese": "Portuguese",
+    "zh": "Chinese",
+    "chinese": "Chinese",
+    "ja": "Japanese", 
+    "japanese": "Japanese",
+    "ko": "Korean",
+    "korean": "Korean",
+    "ar": "Arabic",
+    "arabic": "Arabic",
+    "ru": "Russian",
+    "russian": "Russian",
+    "hi": "Hindi",
+    "hindi": "Hindi",
+    "th": "Thai",
+    "thai": "Thai",
+    "vi": "Vietnamese",
+    "vietnamese": "Vietnamese",
+    "id": "Indonesian",
+    "indonesian": "Indonesian",
+    "ms": "Malay",
+    "malay": "Malay",
+    "tl": "Filipino",
+    "filipino": "Filipino",
+    "fil": "Filipino"
+}
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-TIMEOUT_SECONDS = float(os.getenv("GEMINI_TIMEOUT", "60"))
-RETRIES = int(os.getenv("GEMINI_RETRIES", "3"))
-
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable is required")
-
-
-# ---------------------------------------------------------------------------
-# Helper Functions
-# ---------------------------------------------------------------------------
-
-def _clean_template_data(templates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Clean template data by removing large fields like required_fields and fillable_text_info."""
-    cleaned_templates = []
+def _normalize_language_for_template(language: str) -> str:
+    """Normalize language code/name to template variation format."""
+    if not language:
+        return "English"  # Default fallback
     
-    for template in templates:
-        cleaned_template = {
-            "id": template.get("id"),
-            "file_url": template.get("file_url"),
-            "doc_type": template.get("doc_type"),
-            "variation": template.get("variation"),
-            "created_at": template.get("created_at")
-        }
-        
-        # Clean info_json by removing large fields
-        if "info_json" in template and template["info_json"]:
-            info_json = template["info_json"].copy()
-            
-            # Remove the large fields
-            info_json.pop("required_fields", None)
-            info_json.pop("fillable_text_info", None)
-            
-            cleaned_template["info_json"] = info_json
-        
-        cleaned_templates.append(cleaned_template)
+    normalized = language.lower().strip()
+    return LANGUAGE_TO_TEMPLATE_VARIATION.get(normalized, "English")
+
+def _determine_doc_type_for_template(upload: Upload) -> str:
+    """Determine the document type for template matching based on analysis."""
+    if not upload.analysis:
+        return "birth_certificate"  # Default fallback
     
-    return cleaned_templates
-
-
-def _create_gemini_payload(
-    upload_analysis: Dict[str, Any],
-    cleaned_templates: List[Dict[str, Any]],
-    translated_to: Optional[str] = None
-) -> Dict[str, Any]:
-    """Create the payload for Gemini API request."""
+    doc_classification = upload.analysis.get("doc_classification", "")
     
-    # Create the template matching prompt
-    prompt = f"""
-You are a document template matching expert. Analyze the uploaded document information and find the best matching template from the available options.
-
-UPLOADED DOCUMENT ANALYSIS:
-{json.dumps(upload_analysis, indent=2)}
-
-AVAILABLE TEMPLATES:
-{json.dumps(cleaned_templates, indent=2)}
-
-TARGET TRANSLATION LANGUAGE: {translated_to or "Not specified"}
-
-Your task is to:
-1. Compare the uploaded document characteristics with available templates
-2. Consider document type, variation, language, and content classification
-3. **IMPORTANT**: If a translation language is specified, give HIGHER PRIORITY to templates where info_json.language matches the translated_to language exactly
-4. Language matching should significantly boost confidence scores (add 0.3-0.4 to base confidence)
-5. Select the most appropriate template match
-6. Provide detailed reasoning for your selection
-
-Return a JSON response with the following structure:
-{{
-    "template_match_found": boolean,
-    "template_id": "template_id_if_found_or_null",
-    "confidence_score": float_between_0_and_1,
-    "match_reasoning": "detailed_explanation_of_why_this_template_was_selected_including_language_match_bonus",
-    "language_match_bonus": boolean_indicating_if_template_language_matches_translated_to,
-    "process_analysis": {{
-        "document_compatibility": "assessment_of_how_well_document_matches_template",
-        "language_alignment": "analysis_of_language_compatibility_and_translation_target_match",
-        "structural_similarity": "evaluation_of_document_structure_match",
-        "recommended_next_steps": "suggestions_for_processing_this_document"
-    }}
-}}
-
-Matching criteria priority (in order):
-1. **Language Match**: Template info_json.language exactly matches translated_to (MAJOR confidence boost)
-2. Document type and classification match
-3. Document variation/format similarity  
-4. Content structure and purpose alignment
-5. General language family compatibility
-
-CONFIDENCE SCORING GUIDELINES:
-- Base match (type + structure): 0.3-0.6
-- Language exact match bonus: +0.3-0.4 
-- Strong structural similarity: +0.1-0.2
-- Perfect match (all criteria): 0.8-0.95
-
-Examples:
-- If translated_to="English" and template has info_json.language="English" → high confidence boost
-- If translated_to="Spanish" and template has info_json.language="Spanish" → high confidence boost
-- If no language match but good type/structure match → moderate confidence
-
-If no suitable template is found, set template_match_found to false and template_id to null, but still provide analysis.
-
-Return only valid JSON without any markdown formatting or additional text.
-"""
-    
-    return {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 2000
-        }
-    }
-
-
-@retry(
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    stop=stop_after_attempt(RETRIES),
-    retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
-    reraise=True,
-)
-async def _call_gemini_api(payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Call Gemini API with retry logic."""
-    headers = {
-        "Content-Type": "application/json"
+    # Map analysis classifications to template doc_types
+    classification_mapping = {
+        "psa": "birth_certificate",
+        "birth_certificate": "birth_certificate", 
+        "death_certificate": "death_certificate",
+        "marriage_certificate": "marriage_certificate",
+        "certificate": "birth_certificate",  # Default to birth cert for generic certificates
+        "official_document": "birth_certificate"
     }
     
-    url = f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}"
-    
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        
-        result = response.json()
-        
-        # Extract the generated text from Gemini response
-        if "candidates" in result and len(result["candidates"]) > 0:
-            generated_text = result["candidates"][0]["content"]["parts"][0]["text"]
-            
-            # Parse the JSON response from Gemini
-            try:
-                # Clean up the response - remove any markdown formatting
-                clean_text = generated_text.strip()
-                if clean_text.startswith("```json"):
-                    clean_text = clean_text[7:]
-                if clean_text.endswith("```"):
-                    clean_text = clean_text[:-3]
-                clean_text = clean_text.strip()
-                
-                return json.loads(clean_text)
-            except json.JSONDecodeError as e:
-                log.error("Failed to parse Gemini JSON response: %s", generated_text)
-                raise ValueError(f"Invalid JSON response from Gemini: {e}")
-        else:
-            raise ValueError("No content generated by Gemini API")
-
-
-async def _fetch_all_templates(db_client) -> List[Dict[str, Any]]:
-    """Fetch all templates from the templates table."""
-    try:
-        response = db_client.client.table("templates").select("*").execute()
-        return response.data if response.data else []
-    except Exception as e:
-        log.error("Failed to fetch templates from database: %s", str(e))
-        return []
-
-
-async def _fetch_template_by_id(db_client, template_id: str) -> Dict[str, Any]:
-    """Fetch a specific template by ID."""
-    try:
-        response = db_client.client.table("templates").select("*").eq("id", template_id).execute()
-        return response.data[0] if response.data else {}
-    except Exception as e:
-        log.error("Failed to fetch template by ID %s: %s", template_id, str(e))
-        return {}
-
-
-async def _fetch_template_required_fields(db_client, template_id: str) -> Dict[str, str]:
-    """Fetch the required_fields for a specific template."""
-    try:
-        template = await _fetch_template_by_id(db_client, template_id)
-        
-        if template and "info_json" in template and template["info_json"]:
-            return template["info_json"].get("required_fields", {})
-        
-        return {}
-    except Exception as e:
-        log.error("Failed to fetch template required fields for %s: %s", template_id, str(e))
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# Public coroutine
-# ---------------------------------------------------------------------------
+    return classification_mapping.get(doc_classification, "birth_certificate")
 
 async def find_template_match(
     db_client,
-    upload_analysis: Dict[str, Any],
-    user_upload_public_url: str,
-    translated_to: Optional[str] = None
-) -> Dict[str, Any]:
+    latest_templatable_upload: Upload,
+    translate_from: str,
+    translate_to: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
-    Find the best matching template for the uploaded document.
+    Find matching original and translated templates for the given document.
     
     Args:
-        db_client: Database client instance
-        upload_analysis: Analysis result from analyze_upload
-        user_upload_public_url: URL of the uploaded file
-        translated_to: Target translation language (optional)
-    
+        db_client: Database client for Supabase queries
+        latest_templatable_upload: The analyzed document upload
+        translate_from: Source language of the document
+        translate_to: Target language for translation
+        
     Returns:
-        Dict containing template_id, template_required_fields, and process_analysis
+        Tuple of (original_template, translated_template) dictionaries or None if not found
     """
-    
     try:
-        # Step 1: Fetch all templates from database
-        log.debug("Fetching all templates from database")
-        templates = await _fetch_all_templates(db_client)
+        log.debug(f"Finding template match for document type and languages: {translate_from} -> {translate_to}")
         
-        if not templates:
-            log.warning("No templates found in database")
-            return {
-                "template_match_found": False,
-                "template_id": None,
-                "template_required_fields": {},
-                "confidence_score": 0.0,
-                "language_match_bonus": False,
-                "match_reasoning": "No templates available for matching",
-                "process_analysis": {
-                    "document_compatibility": "No templates available for matching",
-                    "language_alignment": "Cannot assess without templates",
-                    "structural_similarity": "No templates to compare against",
-                    "recommended_next_steps": "Add templates to the database for document processing"
-                }
-            }
+        # Determine document type for template matching
+        doc_type = _determine_doc_type_for_template(latest_templatable_upload)
+        log.debug(f"Determined doc_type: {doc_type}")
         
-        # Step 2: Clean template data
-        log.debug("Cleaning template data, found %d templates", len(templates))
-        cleaned_templates = _clean_template_data(templates)
+        # Normalize languages for template matching
+        original_language = _normalize_language_for_template(translate_from)
+        target_language = _normalize_language_for_template(translate_to)
         
-        # Step 3: Create Gemini API payload
-        payload = _create_gemini_payload(upload_analysis, cleaned_templates, translated_to)
+        log.debug(f"Normalized languages - From: {original_language}, To: {target_language}")
         
-        # Step 4: Call Gemini API for template matching
-        log.debug("Calling Gemini API for template matching")
-        gemini_result = await _call_gemini_api(payload)
+        # Query all templates for the document type
+        templates_response = db_client.client.table("templates").select(
+            "id, doc_type, variation, file_url, info_json, created_at"
+        ).eq("doc_type", doc_type).execute()
         
-        # Step 5: If a template was found, fetch its required fields
-        template_required_fields = {}
-        template_id = gemini_result.get("template_id")
+        if not templates_response.data:
+            log.warning(f"No templates found for doc_type: {doc_type}")
+            return None, None
         
-        if gemini_result.get("template_match_found") and template_id:
-            log.debug("Template match found: %s", template_id)
-            template_required_fields = await _fetch_template_required_fields(db_client, template_id)
+        templates = templates_response.data
+        log.debug(f"Found {len(templates)} templates for doc_type: {doc_type}")
         
-        # Step 6: Build the final result
-        result = {
-            "template_match_found": gemini_result.get("template_match_found", False),
-            "template_id": template_id,
-            "template_required_fields": template_required_fields,
-            "confidence_score": float(gemini_result.get("confidence_score", 0.0)),
-            "language_match_bonus": gemini_result.get("language_match_bonus", False),
-            "match_reasoning": gemini_result.get("match_reasoning", "No reasoning provided"),
-            "process_analysis": gemini_result.get("process_analysis", {
-                "document_compatibility": "Analysis incomplete",
-                "language_alignment": "Analysis incomplete", 
-                "structural_similarity": "Analysis incomplete",
-                "recommended_next_steps": "Retry template matching process"
-            })
-        }
+        # Find original template (source language)
+        original_template = None
+        translated_template = None
         
-        log.debug("Template matching complete → match_found: %s, template_id: %s, confidence: %.2f, language_bonus: %s",
-                 result["template_match_found"], result["template_id"], result["confidence_score"], result["language_match_bonus"])
+        # Look for templates matching the language variations
+        for template in templates:
+            variation = template.get("variation", "")
+            
+            # Check if this template matches the original language
+            if original_language.lower() in variation.lower():
+                original_template = template
+                log.debug(f"Found original template: {template['id']} - {variation}")
+            
+            # Check if this template matches the target language
+            if target_language.lower() in variation.lower():
+                translated_template = template
+                log.debug(f"Found translated template: {template['id']} - {variation}")
         
-        return result
+        # If we couldn't find exact matches, try fallback logic
+        if not original_template:
+            # Default to English template as fallback for original
+            for template in templates:
+                if "english" in template.get("variation", "").lower():
+                    original_template = template
+                    log.debug(f"Using English fallback for original: {template['id']}")
+                    break
+        
+        if not translated_template and target_language != "English":
+            # If no specific translated version exists, we'll use the original for now
+            # The system can handle translation without a specific template
+            log.debug(f"No specific template found for {target_language}, will rely on dynamic translation")
+        
+        # If both languages are the same, use the same template for both
+        if original_language == target_language and original_template:
+            translated_template = original_template
+            log.debug("Source and target languages are the same, using same template for both")
+        
+        # Validate that we have at least an original template
+        if not original_template:
+            log.error(f"Could not find any suitable template for doc_type: {doc_type}")
+            return None, None
+        
+        # Extract additional info from templates
+        if original_template:
+            original_info = original_template.get("info_json", {})
+            log.debug(f"Original template required fields: {len(original_info.get('required_fields', {}))}")
+        
+        if translated_template:
+            translated_info = translated_template.get("info_json", {})
+            log.debug(f"Translated template required fields: {len(translated_info.get('required_fields', {}))}")
+        
+        log.debug("Template matching completed successfully")
+        return original_template, translated_template
         
     except Exception as e:
-        log.error("Template matching failed: %s", str(e))
+        log.error(f"Error finding template match: {str(e)}")
+        log.exception("Template matching failed")
+        return None, None
+
+def validate_template_compatibility(template: Dict[str, Any], upload: Upload) -> bool:
+    """
+    Validate that a template is compatible with the uploaded document.
+    
+    Args:
+        template: Template data from database
+        upload: Upload object with analysis data
         
-        # Return fallback result on error
-        return {
-            "template_match_found": False,
-            "template_id": None,
-            "template_required_fields": {},
-            "confidence_score": 0.0,
-            "language_match_bonus": False,
-            "match_reasoning": f"Template matching failed due to technical error: {str(e)}",
-            "process_analysis": {
-                "document_compatibility": f"Template matching failed due to technical error: {str(e)}",
-                "language_alignment": "Could not assess due to processing error",
-                "structural_similarity": "Analysis interrupted by system error",
-                "recommended_next_steps": "Retry the template matching process or contact support if the issue persists"
-            }
-        }
+    Returns:
+        Boolean indicating if template is compatible
+    """
+    try:
+        if not template or not upload.analysis:
+            return False
+        
+        # Check if document is identified as templatable
+        if not upload.is_templatable:
+            log.debug("Document is not marked as templatable")
+            return False
+        
+        # Check confidence level from analysis
+        confidence = upload.analysis.get("confidence", 0.0)
+        if confidence < 0.6:
+            log.debug(f"Document analysis confidence too low: {confidence}")
+            return False
+        
+        # Check if it's a PSA document (our templates are PSA-specific)
+        is_psa = upload.analysis.get("is_psa_document", False)
+        has_psa_features = upload.analysis.get("has_psa_features", False)
+        
+        if not (is_psa or has_psa_features):
+            log.debug("Document doesn't appear to be a PSA document")
+            return False
+        
+        # Check page count compatibility
+        page_count = upload.analysis.get("page_count")
+        if page_count and page_count > 3:  # PSA documents are typically 1-2 pages
+            log.debug(f"Document has too many pages for PSA template: {page_count}")
+            return False
+        
+        log.debug("Template compatibility validation passed")
+        return True
+        
+    except Exception as e:
+        log.error(f"Error validating template compatibility: {str(e)}")
+        return False

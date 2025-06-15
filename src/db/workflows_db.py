@@ -106,6 +106,11 @@ def save_current_document_in_workflow_state(
         if current_doc.template_id:
             origin_template_mappings = _extract_template_mappings(db_client, current_doc.template_id)
         
+        # Extract translated template mappings from template_translated_id
+        translated_template_mappings = {}
+        if hasattr(current_doc, 'template_translated_id') and current_doc.template_translated_id:
+            translated_template_mappings = _extract_template_mappings(db_client, current_doc.template_translated_id)
+        
         # Prepare the workflow data
         workflow_data = {
             "file_id": current_doc.file_id or None,
@@ -121,6 +126,7 @@ def save_current_document_in_workflow_state(
             "translate_from": getattr(current_doc, 'translate_from', None),
             "current_document_version_public_url": current_doc.current_document_version_public_url or None,
             "origin_template_mappings": origin_template_mappings,
+            "translated_template_mappings": translated_template_mappings,
         }
         
         # Check if workflow already exists for this conversation
@@ -306,38 +312,42 @@ def load_workflow_by_conversation(
 def get_workflow_template_mappings_by_conversation(
     db_client: SupabaseClient, 
     conversation_id: str
-) -> Optional[Dict[str, Any]]:
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
-    Get only the template mappings for a specific conversation ID.
-    Returns the origin_template_mappings dictionary or None if not found.
+    Get both origin and translated template mappings for a specific conversation ID.
+    Returns a tuple of (origin_template_mappings, translated_template_mappings).
+    Both can be None if not found.
     """
     try:
         result = (
             db_client.client
             .table("workflows")
-            .select("origin_template_mappings")
+            .select("origin_template_mappings, translated_template_mappings")
             .eq("conversation_id", conversation_id)
             .execute()
         )
         
         if not result.data:
-            return None
+            return None, None
         
         record = result.data[0]
-        return record.get("origin_template_mappings", {})
+        origin_mappings = record.get("origin_template_mappings", {})
+        translated_mappings = record.get("translated_template_mappings", {})
+        
+        return origin_mappings, translated_mappings
         
     except Exception as e:
         print(f"[get_workflow_template_mappings_by_conversation] Error: {e}")
-        return None
+        return None, None
 
 def get_workflow_with_template_mappings_by_conversation(
     db_client: SupabaseClient, 
     conversation_id: str
-) -> tuple[Optional[CurrentDocumentInWorkflow], Optional[Dict[str, Any]]]:
+) -> tuple[Optional[CurrentDocumentInWorkflow], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     """
-    Load both the workflow state and template mappings for a specific conversation ID.
-    Returns a tuple of (workflow_state, template_mappings).
-    Both can be None if not found.
+    Load the workflow state and both template mappings for a specific conversation ID.
+    Returns a tuple of (workflow_state, origin_template_mappings, translated_template_mappings).
+    All can be None if not found.
     """
     try:
         result = (
@@ -349,7 +359,7 @@ def get_workflow_with_template_mappings_by_conversation(
         )
         
         if not result.data:
-            return None, None
+            return None, None, None
         
         record = result.data[0]
         
@@ -396,11 +406,39 @@ def get_workflow_with_template_mappings_by_conversation(
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
         )
         
-        # Get template mappings separately
-        template_mappings = record.get("origin_template_mappings", {})
+        # Get both template mappings
+        origin_template_mappings = record.get("origin_template_mappings", {})
+        translated_template_mappings = record.get("translated_template_mappings", {})
         
-        return current_doc, template_mappings
+        return current_doc, origin_template_mappings, translated_template_mappings
         
     except Exception as e:
         print(f"[get_workflow_with_template_mappings_by_conversation] Error: {e}")
-        return None, None
+        return None, None, None
+
+def get_translated_template_mappings_by_conversation(
+    db_client: SupabaseClient, 
+    conversation_id: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Get only the translated template mappings for a specific conversation ID.
+    Returns the translated_template_mappings dictionary or None if not found.
+    """
+    try:
+        result = (
+            db_client.client
+            .table("workflows")
+            .select("translated_template_mappings")
+            .eq("conversation_id", conversation_id)
+            .execute()
+        )
+        
+        if not result.data:
+            return None
+        
+        record = result.data[0]
+        return record.get("translated_template_mappings", {})
+        
+    except Exception as e:
+        print(f"[get_translated_template_mappings_by_conversation] Error: {e}")
+        return None

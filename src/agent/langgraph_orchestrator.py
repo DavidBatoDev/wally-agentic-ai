@@ -575,141 +575,179 @@ class LangGraphOrchestrator:
         return state
 
     async def _find_template_node(self, state: AgentState) -> AgentState:
-        """
-        Use the find_template_match tool to find the best matching template.
-        This calls the template matching tool directly in a deterministic way.
-        """
-        print(f"🔍 [FIND_TEMPLATE] Starting for conversation: {state.conversation_id}")
+            """
+            Use the find_template_match helper to find both original and translated templates.
+            This calls the template matching helper to find appropriate template pairs.
+            """
+            print(f"🔍 [FIND_TEMPLATE] Starting for conversation: {state.conversation_id}")
 
-        # Insert a message that we're finding a template
-        template_msg = AIMessage(content="🔍 Finding the best matching template for your document...")
-        state.messages.append(template_msg)
+            # Insert a message that we're finding templates
+            template_msg = AIMessage(content="🔍 Finding the best matching templates for your document...")
+            state.messages.append(template_msg)
 
-        # Create message in database too
-        self.db_client.create_message(
-            conversation_id=state.conversation_id,
-            sender="assistant",
-            kind="text",
-            body=json.dumps({
-                "text": "🔍 Finding the best matching template for your document..."
-            }),
-        )
+            # Create message in database too
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "🔍 Finding the best matching templates for your document..."
+                }),
+            )
 
-        # Mark this step as done
-        state.steps_done.append("find_template")
-        
-        try:
-            # Hardcoded template ID
-            template_id = "9fc0c5fc-2885-4d58-ba0f-4711244eb7df"
+            # Mark this step as done
+            state.steps_done.append("find_template")
             
-            # Get template data from Supabase
-            print(f"🔍 [FIND_TEMPLATE] Fetching template data for ID: {template_id}")
-            
-            template_response = self.db_client.client.table("templates").select(
-                "id, doc_type, variation, file_url, info_json"
-            ).eq("id", template_id).single().execute()
-            
-            if not template_response.data:
-                raise Exception(f"Template with ID {template_id} not found")
-            
-            template_data = template_response.data
-            
-            # Extract required fields from info_json
-            info_json = template_data.get("info_json", {})
-            template_required_fields = info_json.get("required_fields", {})
-            
-            print(f"🔍 [FIND_TEMPLATE] Template found - Type: {template_data['doc_type']}, Variation: {template_data['variation']}")
-            print(f"🔍 [FIND_TEMPLATE] Required fields: {list(template_required_fields.keys())}")
-            
-            # Find the latest user upload where templatable is true
-            latest_templatable_upload = None
-            for upload in reversed(state.user_uploads):  # Check from most recent
-                if upload.is_templatable:
-                    latest_templatable_upload = upload
-                    break
-            
-            if not latest_templatable_upload:
-                raise Exception("No templatable upload found in user uploads")
-            
-            print(f"🔍 [FIND_TEMPLATE] Using upload: {latest_templatable_upload.filename}")
-            
-            # Initialize fields with FieldMetadata for each required field
-            fields = {}
-            for field_key in template_required_fields.keys():
-                fields[field_key] = FieldMetadata(
-                    value="",                    # Empty value initially
-                    value_status="pending",      # Status is pending
-                    translated_value=None,       # No translation initially
-                    translated_status="pending"  # Translation status is pending
+            try:
+                # Find the latest user upload where templatable is true
+                latest_templatable_upload = None
+                for upload in reversed(state.user_uploads):  # Check from most recent
+                    if upload.is_templatable:
+                        latest_templatable_upload = upload
+                        break
+                
+                if not latest_templatable_upload:
+                    raise Exception("No templatable upload found in user uploads")
+                
+                print(f"🔍 [FIND_TEMPLATE] Using upload: {latest_templatable_upload.filename}")
+                
+                # Get translation languages
+                translate_to = state.translate_to if state.translate_to else "en"  # Default to English
+                translate_from = latest_templatable_upload.translated_from if latest_templatable_upload.translated_from else "en"
+                
+                print(f"🔍 [FIND_TEMPLATE] Languages - From: {translate_from}, To: {translate_to}")
+                
+                # Import the template matching helper
+                from agent.functions.find_template_node_helper import find_template_match, validate_template_compatibility
+                
+                # Find matching templates
+                original_template, translated_template = await find_template_match(
+                    self.db_client,
+                    latest_templatable_upload,
+                    translate_from,
+                    translate_to
                 )
-            trasnlate_to = state.translate_to if state.translate_to else "en"  # Default to English if not set
-            trasnlate_from = latest_templatable_upload.translated_from if latest_templatable_upload.translated_from else "en"
-            
-            # Update CurrentDocumentInWorkflow state
-            state.current_document_in_workflow_state.file_id = latest_templatable_upload.file_id
-            state.current_document_in_workflow_state.base_file_public_url = latest_templatable_upload.public_url
-            state.current_document_in_workflow_state.template_id = template_id
-            state.current_document_in_workflow_state.template_file_public_url = template_data["file_url"]
-            state.current_document_in_workflow_state.template_required_fields = template_required_fields
-            state.current_document_in_workflow_state.fields = fields  # Use the new fields structure
-            state.current_document_in_workflow_state.translate_to = normalize_language(trasnlate_to)
-            state.current_document_in_workflow_state.translate_from = normalize_language(trasnlate_from)
-            
-            # Create success message
-            success_message = (
-                f"✅ Found matching template!\n\n"
-                f"📋 Document Type: {template_data['doc_type']}\n\n"
-                f"🔧 Variation: {template_data['variation']}\n\n"
-                f"📝 Required Fields: {len(template_required_fields)} fields to extract\n\n"
-                f"📄 Processing: {latest_templatable_upload.filename}"
-            )
-            
-            success_msg = AIMessage(content=success_message)
-            state.messages.append(success_msg)
-            
-            # Create success message in database
-            self.db_client.create_message(
-                conversation_id=state.conversation_id,
-                sender="assistant",
-                kind="text",
-                body=json.dumps({
-                    "text": success_message
-                }),
-            )
+                
+                if not original_template:
+                    raise Exception("No suitable original template found for this document")
+                
+                # Validate template compatibility
+                if not validate_template_compatibility(original_template, latest_templatable_upload):
+                    raise Exception("Selected template is not compatible with the uploaded document")
+                
+                print(f"🔍 [FIND_TEMPLATE] Found original template: {original_template['id']} - {original_template['variation']}")
+                if translated_template:
+                    print(f"🔍 [FIND_TEMPLATE] Found translated template: {translated_template['id']} - {translated_template['variation']}")
+                else:
+                    print(f"🔍 [FIND_TEMPLATE] No specific translated template found, will use dynamic translation")
+                
+                # Extract required fields from original template
+                original_info_json = original_template.get("info_json", {})
+                template_required_fields = original_info_json.get("required_fields", {})
+                
+                print(f"🔍 [FIND_TEMPLATE] Required fields: {list(template_required_fields.keys())}")
+                
+                # Initialize fields with FieldMetadata for each required field
+                fields = {}
+                for field_key in template_required_fields.keys():
+                    fields[field_key] = FieldMetadata(
+                        value="",                    # Empty value initially
+                        value_status="pending",      # Status is pending
+                        translated_value=None,       # No translation initially
+                        translated_status="pending"  # Translation status is pending
+                    )
+                
+                # Normalize languages
+                normalized_translate_to = normalize_language(translate_to)
+                normalized_translate_from = normalize_language(translate_from)
+                
+                # Update CurrentDocumentInWorkflow state
+                state.current_document_in_workflow_state.file_id = latest_templatable_upload.file_id
+                state.current_document_in_workflow_state.base_file_public_url = latest_templatable_upload.public_url
+                state.current_document_in_workflow_state.template_id = original_template["id"]
+                state.current_document_in_workflow_state.template_file_public_url = original_template["file_url"]
+                state.current_document_in_workflow_state.template_required_fields = template_required_fields
+                state.current_document_in_workflow_state.fields = fields
+                state.current_document_in_workflow_state.translate_to = normalized_translate_to
+                state.current_document_in_workflow_state.translate_from = normalized_translate_from
+                
+                # Set translated template info if available
+                if translated_template:
+                    state.current_document_in_workflow_state.template_translated_id = translated_template["id"]
+                    state.current_document_in_workflow_state.template_translated_file_public_url = translated_template["file_url"]
+                else:
+                    state.current_document_in_workflow_state.template_translated_id = ""
+                    state.current_document_in_workflow_state.template_translated_file_public_url = ""
+                
+                # Create success message
+                success_parts = [
+                    f"✅ **Template Matching Complete**",
+                    f"📋 **Document Type**: {original_template.get('doc_type', 'unknown').replace('_', ' ').title()}",
+                    f"🔧 **Original Template**: {original_template.get('variation', 'unknown')}",
+                ]
+                
+                if translated_template:
+                    success_parts.append(f"🌐 **Translated Template**: {translated_template.get('variation', 'unknown')}")
+                else:
+                    success_parts.append(f"🌐 **Translation**: Dynamic translation to {normalized_translate_to.title()}")
+                
+                success_parts.extend([
+                    f"📝 **Required Fields**: {len(template_required_fields)} fields to extract",
+                    f"📄 **Processing**: {latest_templatable_upload.filename}",
+                    f"🔤 **Languages**: {normalized_translate_from.title()} → {normalized_translate_to.title()}"
+                ])
+                
+                success_message = "\n\n".join(success_parts)
+                
+                success_msg = AIMessage(content=success_message)
+                state.messages.append(success_msg)
+                
+                # Create success message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": success_message
+                    }),
+                )
 
-            save_agent_state(self.db_client, state.conversation_id, state)
-            save_current_document_in_workflow_state(self.db_client, state.conversation_id, state)
+                # Save state
+                save_agent_state(self.db_client, state.conversation_id, state)
+                save_current_document_in_workflow_state(self.db_client, state.conversation_id, state)
+                
+                print(f"🔍 [FIND_TEMPLATE] Successfully configured document workflow")
+                print(f"🔍 [FIND_TEMPLATE] Initialized {len(fields)} fields with FieldMetadata structure")
+                
+            except Exception as e:
+                print(f"🔍 [FIND_TEMPLATE] ERROR: {str(e)}")
+                log.exception(f"Error finding template match: {e}")
             
-            print(f"🔍 [FIND_TEMPLATE] Successfully configured document workflow")
-            print(f"🔍 [FIND_TEMPLATE] Initialized {len(fields)} fields with FieldMetadata structure")
+                # Store empty template info on error
+                state.current_document_in_workflow_state.template_id = ""
+                state.current_document_in_workflow_state.template_translated_id = ""
+                state.current_document_in_workflow_state.template_required_fields = {}
+                state.current_document_in_workflow_state.fields = {}
+                state.current_document_in_workflow_state.template_file_public_url = ""
+                state.current_document_in_workflow_state.template_translated_file_public_url = ""
             
-        except Exception as e:
-            print(f"🔍 [FIND_TEMPLATE] ERROR: {str(e)}")
-            log.exception(f"Error finding template match: {e}")
-        
-            # Store empty template info on error
-            state.current_document_in_workflow_state.template_id = ""
-            state.current_document_in_workflow_state.template_required_fields = {}
-            state.current_document_in_workflow_state.fields = {}  # Empty fields dict
-        
-            error_msg = AIMessage(content="⚠️ Unable to find a matching template. Manual processing may be required.")
-            state.messages.append(error_msg)
-        
-            # Create error message in database
-            self.db_client.create_message(
-                conversation_id=state.conversation_id,
-                sender="assistant",
-                kind="text",
-                body=json.dumps({
-                    "text": "⚠️ Unable to find a matching template. Manual processing may be required."
-                }),
-            )
-        
-            state.workflow_status = WorkflowStatus.FAILED
+                error_msg = AIMessage(content="⚠️ Unable to find matching templates for this document. Manual processing may be required.")
+                state.messages.append(error_msg)
             
-        print(f"🔍 [FIND_TEMPLATE] Completed")
-        return state
-
+                # Create error message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": "⚠️ Unable to find matching templates for this document. Manual processing may be required."
+                    }),
+                )
+            
+                state.workflow_status = WorkflowStatus.FAILED
+                
+            print(f"🔍 [FIND_TEMPLATE] Completed")
+            return state
 
     async def _extract_values_node(self, state: AgentState) -> AgentState:
         """

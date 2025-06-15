@@ -4,7 +4,7 @@ Workflow API router for managing workflow states and operations.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from pydantic import BaseModel, UUID4
 import json
 
@@ -14,7 +14,8 @@ from ..db.db_client import supabase_client
 from ..db.workflows_db import (
     load_workflow_by_conversation, 
     get_workflow_template_mappings_by_conversation,
-    get_workflow_with_template_mappings_by_conversation
+    get_workflow_with_template_mappings_by_conversation,
+    get_translated_template_mappings_by_conversation
 )
 
 router = APIRouter()
@@ -69,8 +70,8 @@ def _guard_membership(conversation_id: str, current_user: User):
     return convo
 
 
-def _serialize_workflow(workflow_obj, template_mappings=None) -> Dict[str, Any]:
-    """Convert CurrentDocumentInWorkflow object to dictionary."""
+def _serialize_workflow(workflow_obj, origin_template_mappings=None, translated_template_mappings=None) -> Dict[str, Any]:
+    """Convert CurrentDocumentInWorkflow object to dictionary with template mappings."""
     if not workflow_obj:
         return {}
     
@@ -88,9 +89,12 @@ def _serialize_workflow(workflow_obj, template_mappings=None) -> Dict[str, Any]:
         "current_document_version_public_url": workflow_obj.current_document_version_public_url,
     }
     
-    # Include origin_template_mappings if provided
-    if template_mappings:
-        workflow_dict["origin_template_mappings"] = template_mappings
+    # Include both template mappings if provided
+    if origin_template_mappings:
+        workflow_dict["origin_template_mappings"] = origin_template_mappings
+    
+    if translated_template_mappings:
+        workflow_dict["translated_template_mappings"] = translated_template_mappings
     
     return workflow_dict
 
@@ -129,12 +133,12 @@ async def get_workflow_by_conversation(
         _ = _guard_membership(str(conversation_id), current_user)
 
         # ── load workflow state ------------------------------------------------
-        workflow, template_mappings = get_workflow_with_template_mappings_by_conversation(
+        workflow, origin_template_mappings, translated_template_mappings = get_workflow_with_template_mappings_by_conversation(
             supabase_client, str(conversation_id)
         )
         
         if workflow:
-            workflow_data = _serialize_workflow(workflow, template_mappings)
+            workflow_data = _serialize_workflow(workflow, origin_template_mappings, translated_template_mappings)
             return WorkflowStatusResponse(
                 conversation_id=conversation_id,
                 has_workflow=True,
@@ -171,7 +175,9 @@ async def get_workflow_fields(
         _ = _guard_membership(str(conversation_id), current_user)
 
         # ── load workflow state ------------------------------------------------
-        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
+        workflow, origin_template_mappings, translated_template_mappings = get_workflow_with_template_mappings_by_conversation(
+            supabase_client, str(conversation_id)
+        )
         
         if not workflow:
             return {
@@ -179,11 +185,6 @@ async def get_workflow_fields(
                 "has_workflow": False,
                 "fields": {}
             }
-
-        # Get template mappings separately
-        template_mappings = get_workflow_template_mappings_by_conversation(
-            supabase_client, str(conversation_id)
-        )
 
         response_data = {
             "success": True,
@@ -194,9 +195,12 @@ async def get_workflow_fields(
             }
         }
         
-        # Include origin_template_mappings if available
-        if template_mappings:
-            response_data["fields"]["origin_template_mappings"] = template_mappings
+        # Include both template mappings if available
+        if origin_template_mappings:
+            response_data["fields"]["origin_template_mappings"] = origin_template_mappings
+        
+        if translated_template_mappings:
+            response_data["fields"]["translated_template_mappings"] = translated_template_mappings
         
         return response_data
 
@@ -216,8 +220,8 @@ async def get_workflow_template_mappings(
     current_user: User = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Get only the template mappings data from a conversation's workflow.
-    Useful for understanding field positioning and formatting.
+    Get both origin and translated template mappings data from a conversation's workflow.
+    Useful for understanding field positioning and formatting for both templates.
     """
     try:
         # ── membership / auth ---------------------------------------------------
@@ -230,18 +234,20 @@ async def get_workflow_template_mappings(
             return {
                 "success": True,
                 "has_workflow": False,
-                "template_mappings": {}
+                "origin_template_mappings": {},
+                "translated_template_mappings": {}
             }
 
-        # Get template mappings separately
-        template_mappings = get_workflow_template_mappings_by_conversation(
+        # Get both template mappings
+        origin_template_mappings, translated_template_mappings = get_workflow_template_mappings_by_conversation(
             supabase_client, str(conversation_id)
-        ) or {}
+        )
 
         return {
             "success": True,
             "has_workflow": True,
-            "template_mappings": template_mappings
+            "origin_template_mappings": origin_template_mappings or {},
+            "translated_template_mappings": translated_template_mappings or {}
         }
 
     except HTTPException:
@@ -251,6 +257,50 @@ async def get_workflow_template_mappings(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get template mappings: {exc}",
+        )
+
+
+@router.get("/{conversation_id}/translated-template-mappings", response_model=Dict[str, Any])
+async def get_workflow_translated_template_mappings(
+    conversation_id: UUID4,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Get only the translated template mappings data from a conversation's workflow.
+    Useful for understanding field positioning and formatting for the translated template.
+    """
+    try:
+        # ── membership / auth ---------------------------------------------------
+        _ = _guard_membership(str(conversation_id), current_user)
+
+        # ── load workflow state ------------------------------------------------
+        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
+        
+        if not workflow:
+            return {
+                "success": True,
+                "has_workflow": False,
+                "translated_template_mappings": {}
+            }
+
+        # Get translated template mappings
+        translated_template_mappings = get_translated_template_mappings_by_conversation(
+            supabase_client, str(conversation_id)
+        )
+
+        return {
+            "success": True,
+            "has_workflow": True,
+            "translated_template_mappings": translated_template_mappings or {}
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"Error getting translated template mappings for conversation {conversation_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get translated template mappings: {exc}",
         )
 
 
