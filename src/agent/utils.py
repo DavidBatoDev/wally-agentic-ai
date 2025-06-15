@@ -6,8 +6,30 @@ Utility functions for LangGraph orchestrator operations.
 from typing import Dict, Any, List, Optional
 import json
 from datetime import datetime
+from enum import Enum
 
-from src.agent.langgraph_orchestrator import WorkflowStatus, WorkflowStep
+# Fix the import - use relative import or handle the import error gracefully
+try:
+    from .agent_state import WorkflowStatus
+except ImportError:
+    try:
+        from agent_state import WorkflowStatus
+    except ImportError:
+        # Define minimal enums if import fails
+        from enum import Enum
+        
+    class WorkflowStatus(str, Enum):
+        PENDING = "pending"
+        IN_PROGRESS = "in_progress"
+        WAITING_CONFIRMATION = "waiting_confirmation"
+        COMPLETED = "completed"
+        FAILED = "failed"
+        CANCELLED = "cancelled"
+        
+
+class WorkflowStep:
+    def __init__(self, status=WorkflowStatus.PENDING):
+        self.status = status
 
 
 def format_workflow_response(
@@ -202,3 +224,186 @@ class LangGraphResponseHandler:
         result["user_confirmation_pending"] = True
         result["confirmation_data"] = confirmation_data
         return result
+
+
+# Language code to full name mapping
+LANGUAGE_MAP = {
+    # Most common languages
+    'en': 'English',
+    'es': 'Spanish',
+    'fr': 'French',
+    'de': 'German',
+    'it': 'Italian',
+    'pt': 'Portuguese',
+    'ru': 'Russian',
+    'ja': 'Japanese',
+    'ko': 'Korean',
+    'zh': 'Chinese',
+    'ar': 'Arabic',
+    'hi': 'Hindi',
+    'tr': 'Turkish',
+    'pl': 'Polish',
+    'nl': 'Dutch',
+    'sv': 'Swedish',
+    'da': 'Danish',
+    'no': 'Norwegian',
+    'fi': 'Finnish',
+    'el': 'Greek',
+    'he': 'Hebrew',
+    'th': 'Thai',
+    'vi': 'Vietnamese',
+    'id': 'Indonesian',
+    'ms': 'Malay',
+    'tl': 'Filipino',
+    'uk': 'Ukrainian',
+    'cs': 'Czech',
+    'sk': 'Slovak',
+    'hu': 'Hungarian',
+    'ro': 'Romanian',
+    'bg': 'Bulgarian',
+    'hr': 'Croatian',
+    'sr': 'Serbian',
+    'sl': 'Slovenian',
+    'et': 'Estonian',
+    'lv': 'Latvian',
+    'lt': 'Lithuanian',
+    'mt': 'Maltese',
+    'ga': 'Irish',
+    'cy': 'Welsh',
+    'is': 'Icelandic',
+    'fa': 'Persian',
+    'ur': 'Urdu',
+    'bn': 'Bengali',
+    'ta': 'Tamil',
+    'te': 'Telugu',
+    'ml': 'Malayalam',
+    'kn': 'Kannada',
+    'gu': 'Gujarati',
+    'pa': 'Punjabi',
+    'mr': 'Marathi',
+    'ne': 'Nepali',
+    'si': 'Sinhalese',
+    'my': 'Burmese',
+    'km': 'Khmer',
+    'lo': 'Lao',
+    'ka': 'Georgian',
+    'am': 'Amharic',
+    'sw': 'Swahili',
+    'zu': 'Zulu',
+    'af': 'Afrikaans',
+    'sq': 'Albanian',
+    'eu': 'Basque',
+    'be': 'Belarusian',
+    'bs': 'Bosnian',
+    'ca': 'Catalan',
+    'mk': 'Macedonian',
+    'az': 'Azerbaijani',
+    'kk': 'Kazakh',
+    'ky': 'Kyrgyz',
+    'uz': 'Uzbek',
+    'tg': 'Tajik',
+    'mn': 'Mongolian',
+    'hy': 'Armenian',
+    
+    # Regional variants
+    'en-us': 'English (US)',
+    'en-gb': 'English (UK)',
+    'en-ca': 'English (Canada)',
+    'en-au': 'English (Australia)',
+    'es-es': 'Spanish (Spain)',
+    'es-mx': 'Spanish (Mexico)',
+    'es-ar': 'Spanish (Argentina)',
+    'fr-fr': 'French (France)',
+    'fr-ca': 'French (Canada)',
+    'pt-br': 'Portuguese (Brazil)',
+    'pt-pt': 'Portuguese (Portugal)',
+    'zh-cn': 'Chinese (Simplified)',
+    'zh-tw': 'Chinese (Traditional)',
+    'de-de': 'German (Germany)',
+    'de-at': 'German (Austria)',
+    'de-ch': 'German (Switzerland)',
+}
+
+
+def normalize_language(lang_code):
+    """
+    Normalizes a language code to its full language name.
+    
+    Args:
+        lang_code (str): The language code (e.g., 'en', 'es', 'fr')
+    
+    Returns:
+        str: The full language name, or the original code if not found
+    
+    Examples:
+        >>> normalize_language('en')
+        'English'
+        >>> normalize_language('es-mx')
+        'Spanish (Mexico)'
+        >>> normalize_language('xyz')
+        'xyz'
+    """
+    if not isinstance(lang_code, str):
+        return lang_code
+    
+    # Convert to lowercase for case-insensitive matching
+    normalized_code = lang_code.lower()
+    
+    # Try exact match first
+    if normalized_code in LANGUAGE_MAP:
+        return LANGUAGE_MAP[normalized_code]
+    
+    # If no exact match and it's a regional variant (contains hyphen),
+    # try the base language code
+    if '-' in normalized_code:
+        base_code = normalized_code.split('-')[0]
+        if base_code in LANGUAGE_MAP:
+            return LANGUAGE_MAP[base_code]
+    
+    # Return original code if not found
+    return lang_code
+
+
+def get_supported_language_codes():
+    """
+    Get all supported language codes.
+    
+    Returns:
+        list: List of supported language codes
+    """
+    return list(LANGUAGE_MAP.keys())
+
+
+def get_supported_language_names():
+    """
+    Get all supported language names.
+    
+    Returns:
+        list: List of supported language names
+    """
+    return list(LANGUAGE_MAP.values())
+
+
+def is_language_supported(lang_code):
+    """
+    Check if a language code is supported.
+    
+    Args:
+        lang_code (str): The language code to check
+        
+    Returns:
+        bool: True if supported, False otherwise
+    """
+    if not isinstance(lang_code, str):
+        return False
+    
+    normalized_code = lang_code.lower()
+    if normalized_code in LANGUAGE_MAP:
+        return True
+    
+    # Check base code for regional variants
+    if '-' in normalized_code:
+        base_code = normalized_code.split('-')[0]
+        return base_code in LANGUAGE_MAP
+    
+    return False

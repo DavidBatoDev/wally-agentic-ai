@@ -29,6 +29,7 @@ from src.db.db_client import SupabaseClient, supabase_client
 # from src.agent.analyze_tools import get_analyze_tool
 from src.agent.functions.smart_router import SmartRouter
 from src.agent.helpers import create_message_if_not_duplicate
+from src.agent.utils import normalize_language
 
 
 log = logging.getLogger(__name__)
@@ -504,13 +505,14 @@ class LangGraphOrchestrator:
             # Check if document is templatable and move to appropriate list
             is_templatable = analysis_result.get("is_templatable", False)
             state.latest_upload.is_templatable = is_templatable
+            language = normalize_language(analysis_result.get("detected_language", "unknown"))
+            state.latest_upload.translated_from = normalize_language(language)
             
             # Create response based on templatable status
             if is_templatable:
                 # Create detailed summary for templatable documents
                 doc_type = analysis_result.get("doc_type", "unknown")
                 variation = analysis_result.get("variation", "standard")
-                language = analysis_result.get("detected_language", "unknown")
                 doc_classification = analysis_result.get("doc_classification", "other")
 
                 summary_parts = [
@@ -640,6 +642,8 @@ class LangGraphOrchestrator:
                     translated_value=None,       # No translation initially
                     translated_status="pending"  # Translation status is pending
                 )
+            trasnlate_to = state.translate_to if state.translate_to else "en"  # Default to English if not set
+            trasnlate_from = latest_templatable_upload.translated_from if latest_templatable_upload.translated_from else "en"
             
             # Update CurrentDocumentInWorkflow state
             state.current_document_in_workflow_state.file_id = latest_templatable_upload.file_id
@@ -648,6 +652,8 @@ class LangGraphOrchestrator:
             state.current_document_in_workflow_state.template_file_public_url = template_data["file_url"]
             state.current_document_in_workflow_state.template_required_fields = template_required_fields
             state.current_document_in_workflow_state.fields = fields  # Use the new fields structure
+            state.current_document_in_workflow_state.translate_to = normalize_language(trasnlate_to)
+            state.current_document_in_workflow_state.translate_from = normalize_language(trasnlate_from)
             
             # Create success message
             success_message = (
@@ -703,6 +709,7 @@ class LangGraphOrchestrator:
             
         print(f"🔍 [FIND_TEMPLATE] Completed")
         return state
+
 
     async def _extract_values_node(self, state: AgentState) -> AgentState:
         """
@@ -925,7 +932,7 @@ class LangGraphOrchestrator:
             # Create message asking for desired language
             language_prompt = (
                 f"🌐 **Let me try to find existing template from the database**\n\n"
-                f"I've analyzed your **{doc_type}** (currently in **{detected_language}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
+                f"I've analyzed your **{doc_type}** (currently in **{normalize_language(detected_language)}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
                 f"**To try and find the template of this document, I would need to know the desired language, What language would you like me to translate it to?**\n\n"
                 f"Please specify your desired target language, and I'll proceed with finding the appropriate template."
             )

@@ -34,6 +34,7 @@ class Upload(BaseModel):
     size_bytes: Optional[int] = 0
     analysis: Optional[Dict[str, Any]] = Field(default_factory=dict)
     is_templatable: Optional[bool] = False  # whether this upload can be used in templates
+    translated_from: Optional[str] = 'English'  # Language this file was translated from, if applicable
     class Config:
         arbitrary_types_allowed = True
 
@@ -50,6 +51,7 @@ class CurrentDocumentInWorkflow(BaseModel):
     template_required_fields: Dict[str, Any] = Field(default_factory=dict) # require (Will get this using the find_template_node)
     fields: Dict[str, FieldMetadata] = Field(default_factory=dict) # "{birth_date}": FieldMetadata(value="2023-01-01", value_status="confirmed")
     translate_to: Optional[str] = None  # Language to translate the document to, if applicable
+    translate_from: Optional[str] = None  # Language the document is currently in, if applicable
     current_document_version_public_url: str = "" # ID of the current document version
 
     class Config:
