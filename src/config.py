@@ -9,6 +9,8 @@ from functools import lru_cache
 import base64
 import logging
 
+from typing import Optional
+
 # Set up logger
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('httpx').setLevel(logging.CRITICAL)
@@ -40,13 +42,14 @@ class Settings:
     
     # Authentication settings
     VERIFY_USER_EXISTS: bool = os.getenv("VERIFY_USER_EXISTS", "False").lower() in ("true", "1", "t")
-
-    DEBUG: bool = True
     
     # Agent settings
     MAX_AGENT_ITERATIONS: int = 5
     DEFAULT_AGENT_TEMPERATURE: float = 0.2
 
+    # Google Translate settings
+    GOOGLE_TRANSLATE_API_KEY: Optional[str] = os.getenv("GOOGLE_TRANSLATE_API_KEY")
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     
     # CORS settings
     CORS_ORIGINS: list = [
@@ -71,10 +74,12 @@ class Settings:
         self._process_jwt_secret()
         
         # Log debug information
-        # if self.DEBUG:
-        #     logger.info(f"App name: {self.APP_NAME}")
-        #     logger.info(f"Supabase URL: {self.SUPABASE_URL}")
-        #     logger.info(f"JWT secret length: {len(self.SUPABASE_JWT_SECRET) if self.SUPABASE_JWT_SECRET else 0}")
+        if self.DEBUG:
+            logger.info(f"App name: {self.APP_NAME}")
+            logger.info(f"Supabase URL: {self.SUPABASE_URL}")
+            logger.info(f"JWT secret length: {len(self.SUPABASE_JWT_SECRET) if self.SUPABASE_JWT_SECRET else 0}")
+            logger.info(f"Google Translate API Key configured: {'Yes' if self.GOOGLE_TRANSLATE_API_KEY else 'No'}")
+            logger.info(f"Google Application Credentials configured: {'Yes' if self.GOOGLE_APPLICATION_CREDENTIALS else 'No'}")
     
     def _process_jwt_secret(self):
         """Process the JWT secret for proper format."""
@@ -107,3 +112,32 @@ class Settings:
 def get_settings() -> Settings:
     """Return cached settings instance."""
     return Settings()
+
+# Validate translation settings
+def validate_translation_settings():
+    """
+    Validate that required translation API credentials are available.
+    """
+    settings = get_settings()
+    
+    if not settings.GEMINI_API_KEY or settings.GEMINI_API_KEY == "my-gemini-api-key":
+        raise ValueError("GEMINI_API_KEY environment variable is required and must be set to a valid API key")
+    
+    if not settings.GOOGLE_APPLICATION_CREDENTIALS and not settings.GOOGLE_TRANSLATE_API_KEY:
+        raise ValueError(
+            "Either GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_TRANSLATE_API_KEY "
+            "environment variable is required for Google Translate"
+        )
+    
+    # Log which method is being used
+    if settings.GOOGLE_TRANSLATE_API_KEY:
+        logger.info("Using Google Translate API with direct API key")
+    elif settings.GOOGLE_APPLICATION_CREDENTIALS:
+        logger.info("Using Google Translate API with service account credentials")
+
+# Call validation on import
+try:
+    validate_translation_settings()
+except ValueError as e:
+    logger.warning(f"Translation configuration incomplete: {e}")
+    logger.warning("Translation features may not work properly.")
