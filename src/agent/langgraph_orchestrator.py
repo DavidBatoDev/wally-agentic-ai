@@ -681,6 +681,7 @@ class LangGraphOrchestrator:
                 
                 # Create success message
                 success_parts = [
+                    f"[Intermediate Step]"
                     f"✅ **Template Matching Complete**",
                     f"📋 **Document Type**: {original_template.get('doc_type', 'unknown').replace('_', ' ').title()}",
                     f"🔧 **Original Template**: {original_template.get('variation', 'unknown')}",
@@ -830,6 +831,7 @@ class LangGraphOrchestrator:
                 variation = extraction_result.get("variation", "standard")
                 
                 summary_parts = [
+                    f"[Extraction Step]",
                     f"✅ **Value Extraction Complete**\n",
                     f"• **Document Type**: {doc_type.replace('_', ' ').title()}\n",
                     f"• **Variation**: {variation.replace('_', ' ').title()}\n\n",
