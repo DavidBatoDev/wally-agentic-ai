@@ -16,7 +16,7 @@ class WorkflowStatus(str, Enum):
     CANCELLED = "cancelled"
 
 class FieldMetadata(BaseModel):
-    value: Any                                   # Main field value (extracted or filled)
+    value: Optional[str]                                   # Main field value (extracted or filled)
     value_status: str = "pending"                # Status for value: "pending", "ocr", "edited", or "confirmed"
 
     translated_value: Optional[str] = None       # LLM translation of the value (if available)
