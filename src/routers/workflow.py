@@ -24,6 +24,7 @@ from ..db.workflows_db import (
     get_translated_template_mappings_by_conversation
 )
 from ..services.translation_service import translation_service
+from .language_helpers import normalize_language_code, validate_language_code, normalize_and_validate_language
 
 router = APIRouter()
 
@@ -631,12 +632,33 @@ async def translate_all_workflow_fields(
                 errors={}
             )
         
+        # ── normalize and validate language codes ────────────────────────────
+        target_language_code, target_is_valid = normalize_and_validate_language(request.target_language)
+        
+        if not target_is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported target language: '{request.target_language}'. Normalized to '{target_language_code}' but not supported by translation service."
+            )
+        
+        source_language_code = None
+        if source_language:
+            source_language_code, source_is_valid = normalize_and_validate_language(source_language)
+            if not source_is_valid:
+                print(f"Warning: Unsupported source language '{source_language}', normalized to '{source_language_code}'. Translation will proceed with auto-detection.")
+                # Don't raise error for source language - let the service auto-detect
+                source_language_code = None
+        
+        print(f"Translation request - Target: '{request.target_language}' -> '{target_language_code}' (valid: {target_is_valid})")
+        if source_language:
+            print(f"Translation request - Source: '{source_language}' -> '{source_language_code}' (valid: {source_is_valid if source_language_code else 'auto-detect'})")
+        
         # ── perform translations ────────────────────────────────────────────
         try:
             translations = translation_service.translate_multiple_fields(
                 fields_to_translate,
-                request.target_language,
-                source_language,
+                target_language_code,
+                source_language_code,
                 request.use_gemini
             )
         except Exception as translation_error:
@@ -684,8 +706,8 @@ async def translate_all_workflow_fields(
                     updated_fields[field_key] = {
                         "value": field_metadata.value,
                         "value_status": field_metadata.value_status,
-                        "translated_value": field_metadata.translated_value,
-                        "translated_status": field_metadata.translated_status
+                        "translated_value": getattr(field_metadata, 'translated_value', None),
+                        "translated_status": getattr(field_metadata, 'translated_status', 'pending')
                     }
                 elif isinstance(field_metadata, dict):
                     updated_fields[field_key] = field_metadata
@@ -739,7 +761,7 @@ async def translate_all_workflow_fields(
         
         return TranslationResponse(
             success=True,
-            message=f"Successfully translated {len(translated_fields_response)} fields",
+            message=f"Successfully translated {len(translated_fields_response)} fields from {source_language or 'auto-detected'} to {request.target_language}",
             translated_fields=translated_fields_response,
             skipped_fields=skipped_fields,
             errors=translation_errors
@@ -753,7 +775,6 @@ async def translate_all_workflow_fields(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to translate workflow fields: {exc}",
         )
-    
 
 @router.post("/{conversation_id}/translate-field", response_model=Dict[str, Any])
 async def translate_single_workflow_field(
