@@ -239,7 +239,7 @@ class LangGraphOrchestrator:
             ctx.append("Document uploaded and analyzed as templatable. Ask user for desired translation language.")
         elif state.translate_to and not current_doc.template_id:
             ctx.append("Target language specified. Find matching template based on document analysis.")
-        elif current_doc.template_id and not current_doc.fields:
+        elif current_doc.template_id and current_doc.fields and all(f.value_status == "pending" for f in current_doc.fields.values()):
             ctx.append("Template found. Extract required field values from the uploaded document.")
         elif current_doc.fields and state.translate_to:
             # Check if any fields need translation
@@ -333,29 +333,10 @@ class LangGraphOrchestrator:
         for msg in state.messages:
             # If it's an AIMessage and has tool_calls present
             if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                # Case A: Both content and tool_calls are non‐empty
+                # Only include messages that have content (skip tool-only messages with empty content)
                 if msg.content and msg.content.strip():
-                    
-                    # 1) Tool‐only message (tool_calls must be a list)
-                    tool_msg = AIMessage(
-                        content="",  # explicitly empty string
-                        tool_calls=list(msg.tool_calls),  # ensure this is a list
-                        additional_kwargs=msg.additional_kwargs,
-                        response_metadata=msg.response_metadata
-                    )
-                    clean_messages.append(tool_msg)
-
-                else:
-                    # continue
-                    # Case B: No content, only tool_calls (still wrap in list)
-                    tool_msg = AIMessage(
-                        content="",
-                        tool_calls=list(msg.tool_calls),  # wrap in list
-                        additional_kwargs=msg.additional_kwargs,
-                        response_metadata=msg.response_metadata
-                    )
-                    clean_messages.append(tool_msg)
-
+                    clean_messages.append(msg)
+                # Skip tool-only messages with empty content to avoid Gemini errors
                 continue
             elif isinstance(msg, AIMessage) and msg.content.strip() == "":
                 # If it's an AIMessage with empty content, skip it
@@ -363,10 +344,6 @@ class LangGraphOrchestrator:
 
             # Everything else (e.g., HumanMessage or AIMessage without tool_calls)
             clean_messages.append(msg)
-
-        for msg in clean_messages:
-            if msg.content.strip() == "":
-                print(f"🙏🏻 MSG content: ", msg)
 
         # 2) Build the SystemMessage with the current workflow context
         sys_msg = SystemMessage(content=self._create_system_message(state))
@@ -808,13 +785,13 @@ class LangGraphOrchestrator:
                 # Update existing fields with extracted values
                 for field_key, field_data in extracted_fields.items():
                     if field_key in state.current_document_in_workflow_state.fields:
-                        print(f"📄1.  [EXTRACT_VALUES] Updating existing field: {field_key} with {field_data.get("value", "")}")
+                        # print(f"📄1.  [EXTRACT_VALUES] Updating existing field: {field_key} with {field_data.get("value", "")}")
                         # Update the existing FieldMetadata with the extracted value
                         state.current_document_in_workflow_state.fields[field_key].value = field_data.get("value", "")
                         state.current_document_in_workflow_state.fields[field_key].value_status = "ocr"
                     else:
                         # Create new FieldMetadata for fields not previously in the template
-                        print(f"📄2. [EXTRACT_VALUES] Adding new field: {field_key} with {field_data.get("value", "")}")
+                        # print(f"📄2. [EXTRACT_VALUES] Adding new field: {field_key} with {field_data.get("value", "")}")
                         from agent.agent_state import FieldMetadata
                         state.current_document_in_workflow_state.fields[field_key] = FieldMetadata(
                             value=field_data.get("value", ""),

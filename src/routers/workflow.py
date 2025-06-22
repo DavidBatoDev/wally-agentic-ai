@@ -99,11 +99,19 @@ def _guard_membership(conversation_id: str, current_user: User):
     return convo
 
 
+def _parse_if_str(val):
+    if isinstance(val, str):
+        try:
+            return json.loads(val)
+        except Exception:
+            return {}
+    return val or {}
+
+
 def _serialize_workflow(workflow_obj, origin_template_mappings=None, translated_template_mappings=None) -> Dict[str, Any]:
     """Convert CurrentDocumentInWorkflow object to dictionary with template mappings."""
     if not workflow_obj:
         return {}
-    
     workflow_dict = {
         "file_id": workflow_obj.file_id,
         "base_file_public_url": workflow_obj.base_file_public_url,
@@ -117,14 +125,21 @@ def _serialize_workflow(workflow_obj, origin_template_mappings=None, translated_
         "translate_from": getattr(workflow_obj, 'translate_from', None),
         "current_document_version_public_url": workflow_obj.current_document_version_public_url,
     }
-    
-    # Include both template mappings if provided
-    if origin_template_mappings:
-        workflow_dict["origin_template_mappings"] = origin_template_mappings
-    
-    if translated_template_mappings:
-        workflow_dict["translated_template_mappings"] = translated_template_mappings
-    
+    # Always parse mappings if they are strings
+    if origin_template_mappings is not None:
+        workflow_dict["origin_template_mappings"] = _parse_if_str(origin_template_mappings)
+    if translated_template_mappings is not None:
+        workflow_dict["translated_template_mappings"] = _parse_if_str(translated_template_mappings)
+    # Always include info_json_custom, parsed as object if string
+    if hasattr(workflow_obj, 'info_json_custom') and workflow_obj.info_json_custom is not None:
+        val = workflow_obj.info_json_custom
+        if isinstance(val, str):
+            try:
+                workflow_dict["info_json_custom"] = json.loads(val)
+            except Exception:
+                workflow_dict["info_json_custom"] = {}
+        else:
+            workflow_dict["info_json_custom"] = val
     return workflow_dict
 
 
@@ -393,7 +408,7 @@ async def update_single_workflow_field(
         
         # ── update workflow in database -----------------------------------------
         update_data = {
-            "fields": json.dumps(serialized_current_fields),
+            "fields": serialized_current_fields,
             "updated_at": "now()"
         }
         
@@ -489,7 +504,7 @@ async def update_workflow_fields(
         
         # Update the workflow in the database
         update_data = {
-            "fields": json.dumps(serialized_fields),
+            "fields": serialized_fields,
             "updated_at": "now()"
         }
         
@@ -721,7 +736,7 @@ async def translate_all_workflow_fields(
         
         # ── update database ─────────────────────────────────────────────────
         update_data = {
-            "fields": json.dumps(updated_fields),
+            "fields": updated_fields,
             "updated_at": "now()"
         }
         
@@ -824,19 +839,19 @@ async def translate_single_workflow_field(
             )
         
         # ── determine source language ───────────────────────────────────────
-        source_language = request.source_language
-        if not source_language and workflow.translate_from:
-            source_language = workflow.translate_from
+        source_language = workflow.translate_from
         
         # ── perform translation ─────────────────────────────────────────────
         try:
+            print(field_value)
             translated_value = translation_service.translate_field_value(
                 str(field_value),
-                request.target_language,
+                workflow.translate_to,
                 source_language,
                 field_context=request.field_key,
                 use_gemini=request.use_gemini
             )
+            print(translated_value)
         except Exception as translation_error:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -892,7 +907,7 @@ async def translate_single_workflow_field(
         
         # ── update database ─────────────────────────────────────────────────
         update_data = {
-            "fields": json.dumps(updated_fields),
+            "fields": updated_fields,
             "updated_at": "now()"
         }
         
@@ -964,6 +979,7 @@ class FillTextEnhancedRequest(BaseModel):
     template_translated_id: str
     isTranslated: bool
     fields: Dict[str, FieldMetadata]
+    template_mappings: Optional[Dict[str, Any]] = None
 
 def get_local_unicode_font():
     """
@@ -1038,6 +1054,7 @@ async def insert_text_enhanced(
     """
     Insert text into PDF using template configuration from Supabase database with translation support.
     Downloads the PDF from the file_url stored in the template record.
+    Uses info_json_custom from the workflow row if it exists, otherwise falls back to the template's info_json.
     
     Args:
         request: Request containing:
@@ -1045,6 +1062,7 @@ async def insert_text_enhanced(
             - template_translated_id: UUID of the translated template from Supabase
             - isTranslated: Boolean flag to determine which template and values to use
             - fields: Dictionary of field mappings with FieldMetadata objects
+            - template_mappings: Optional dictionary of template mappings
     
     Returns:
         Modified PDF file
@@ -1052,20 +1070,59 @@ async def insert_text_enhanced(
     
     # 1️⃣ Determine which template to use based on isTranslated flag
     target_template_id = request.template_translated_id if request.isTranslated else request.template_id
-    
+    # 1b️⃣ Try to get info_json_custom from the workflow row for this conversation
+    info_json_custom = None
+    try:
+        workflow_row = supabase_client.client.table("workflows").select("info_json_custom").eq("conversation_id", request.template_id).execute()
+        if workflow_row.data and workflow_row.data[0].get("info_json_custom"):
+            info_json_custom = json.loads(workflow_row.data[0]["info_json_custom"])
+    except Exception as e:
+        print(f"Warning: Could not fetch info_json_custom: {e}")
+
     # 2️⃣ Fetch template from Supabase (get both info_json and file_url)
     try:
         response = supabase_client.client.table("templates").select("info_json, file_url").eq("id", target_template_id).execute()
         if not response.data or len(response.data) == 0:
             raise HTTPException(status_code=404, detail=f"Template with ID {target_template_id} not found")
-        
         template_info = response.data[0]["info_json"]
         file_url = response.data[0]["file_url"]
-        fillable_text_info = template_info.get("fillable_text_info", [])
-        
+
+        # Use info_json_custom if present
+        if info_json_custom:
+            template_info = info_json_custom
+        # Use the correct mappings for fillable_text_info
+        fillable_text_info = None
+        if request.isTranslated and hasattr(request, 'translated_template_mappings') and request.translated_template_mappings is not None:
+            print("translated")
+            # Parse template_mappings if it is a string
+            template_mappings = request.translated_template_mappings
+            if isinstance(template_mappings, str):
+                try:
+                    template_mappings = json.loads(template_mappings)
+                except Exception as e:
+                    print(f"Error parsing template_mappings as JSON: {e}")
+                    template_mappings = {}
+            # Ensure fillable_text_info is a list of dicts
+            if isinstance(template_mappings, dict):
+                fillable_text_info = list(template_mappings.values())
+            elif isinstance(template_mappings, list):
+                fillable_text_info = template_mappings
+            else:
+                print(f"[ERROR] template_mappings is not a dict or list: {type(template_mappings)}")
+                fillable_text_info = []
+        elif not request.isTranslated and hasattr(request, 'origin_template_mappings') and request.origin_template_mappings is not None:
+            print("Origin")
+            fillable_text_info = list(request.origin_template_mappings.values())
+        elif request.template_mappings is not None:
+            print("temp_mapp")
+            # Parse template_mappings if it is a string
+            template_mappings = request.template_mappings
+            fillable_text_info = template_mappings
+
+        else:
+            fillable_text_info = template_info.get("fillable_text_info", [])
         if not file_url:
             raise HTTPException(status_code=400, detail="Template does not have a file_url")
-            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching template: {str(e)}")
     
@@ -1085,29 +1142,40 @@ async def insert_text_enhanced(
         print("Warning: No local Unicode font found. Greek text may not display correctly.")
     
     # 5️⃣ Create updated fillable_text_info with provided values
+    print(f"fillable_text_info type: {type(fillable_text_info)}")
+    print(f"[DEBUG] fillable_text_info length: {len(fillable_text_info)}")
+    for key, field in fillable_text_info.items():
+        print(f"Key: {key}, Field: {field}")
+    print(f"[DEBUG] request.fields keys: {list(request.fields.keys())}")
     updated_fields = []
-    
-    for field in fillable_text_info:
+    inserted_count = 0
+    for key, field in fillable_text_info.items():
         # Create a copy of the field
-        updated_field = field.copy()
-        
+        updated_field = field
+
         # Get the field key
-        field_key = field.get("key", "")
-        
+        field_key = key
+
         # Check if we have this field in our request
         if field_key in request.fields:
             field_metadata = request.fields[field_key]
-            
             # Determine which value to use based on isTranslated flag
             if request.isTranslated:
                 # Use translated_value if available
                 if field_metadata.translated_value is not None:
                     updated_field["value"] = field_metadata.translated_value
+                    print(f"[DEBUG] Inserting translated value for {field_key}: {field_metadata.translated_value}")
+                else:
+                    print(f"[DEBUG] No translated_value for {field_key}, skipping")
             else:
                 # Use regular value if available
                 if field_metadata.value is not None:
                     updated_field["value"] = field_metadata.value
-        
+                    print(f"[DEBUG] Inserting value for {field_key}: {field_metadata.value}")
+                else:
+                    print(f"[DEBUG] No value for {field_key}, skipping")
+        else:
+            print(f"[DEBUG] Field key {field_key} not in request.fields, skipping")
         updated_fields.append(updated_field)
     
     # 6️⃣ Open PDF document
@@ -1122,8 +1190,9 @@ async def insert_text_enhanced(
         for field in updated_fields:
             # Skip fields without values
             if not field.get("value"):
+                print(f"[DEBUG] Skipping field {field.get('key')} - no value to insert")
                 continue
-                
+            inserted_count += 1
             page = doc[field["page_number"] - 1]
             position = field["position"]
             bbox = Rect(position["x0"], position["y0"], position["x1"], position["y1"])
@@ -1348,6 +1417,8 @@ async def insert_text_enhanced(
         if not pdf_header.startswith(b'%PDF'):
             raise HTTPException(status_code=500, detail="Generated file is not a valid PDF")
         
+        print(f"[DEBUG] Total fields inserted into PDF: {inserted_count}")
+        
     except Exception as e:
         # Make sure to close the document even if there's an error
         if doc:
@@ -1372,5 +1443,139 @@ async def insert_text_enhanced(
         media_type="application/pdf", 
         headers=headers
     )
+
+class UpdateTemplateMappingsRequest(BaseModel):
+    origin_template_mappings: Optional[Dict[str, Any]] = None
+    translated_template_mappings: Optional[Dict[str, Any]] = None
+    fields: Optional[Dict[str, Any]] = None
+    info_json_custom: Optional[Dict[str, Any]] = None  # NEW: allow saving custom info_json
+
+@router.patch("/{conversation_id}/template-mappings", response_model=Dict[str, Any])
+async def update_template_mappings(
+    conversation_id: UUID4,
+    request: UpdateTemplateMappingsRequest,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Update origin/translated template mappings, fields, and/or info_json_custom for a workflow.
+    Supports move, resize, add, and delete of text boxes, keeping mappings and fields in sync.
+    """
+    try:
+        _ = _guard_membership(str(conversation_id), current_user)
+        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
+        if not workflow:
+            raise HTTPException(status_code=404, detail="No workflow found for this conversation")
+        update_data = {}
+        # Check if info_json_custom is present in workflow row
+        workflow_row = supabase_client.client.table("workflows").select("info_json_custom, template_id, origin_template_mappings, translated_template_mappings, fields").eq("conversation_id", str(conversation_id)).execute()
+        info_json_custom_db = None
+        template_id = None
+        origin_template_mappings_db = {}
+        translated_template_mappings_db = {}
+        fields_db = {}
+        if workflow_row.data and len(workflow_row.data) > 0:
+            info_json_custom_db = workflow_row.data[0].get("info_json_custom")
+            template_id = workflow_row.data[0].get("template_id")
+            origin_template_mappings_db = workflow_row.data[0].get("origin_template_mappings") or {}
+            translated_template_mappings_db = workflow_row.data[0].get("translated_template_mappings") or {}
+            fields_db = workflow_row.data[0].get("fields") or {}
+            if isinstance(origin_template_mappings_db, str):
+                try:
+                    origin_template_mappings_db = json.loads(origin_template_mappings_db)
+                except Exception:
+                    origin_template_mappings_db = {}
+            if isinstance(translated_template_mappings_db, str):
+                try:
+                    translated_template_mappings_db = json.loads(translated_template_mappings_db)
+                except Exception:
+                    translated_template_mappings_db = {}
+            if isinstance(fields_db, str):
+                try:
+                    fields_db = json.loads(fields_db)
+                except Exception:
+                    fields_db = {}
+        # If info_json_custom is not present and not provided in request, initialize from template
+        if not info_json_custom_db and request.info_json_custom is None:
+            template_row = supabase_client.client.table("templates").select("info_json").eq("id", template_id).execute()
+            if not template_row.data or len(template_row.data) == 0:
+                raise HTTPException(status_code=404, detail="Template not found for workflow")
+            template_info_json = template_row.data[0]["info_json"]
+            update_data["info_json_custom"] = json.dumps(template_info_json)
+            info_json_custom = template_info_json.copy() if hasattr(template_info_json, 'copy') else dict(template_info_json)
+        elif request.info_json_custom is not None:
+            update_data["info_json_custom"] = json.dumps(request.info_json_custom)
+            info_json_custom = request.info_json_custom.copy() if hasattr(request.info_json_custom, 'copy') else dict(request.info_json_custom)
+        else:
+            info_json_custom = json.loads(info_json_custom_db) if isinstance(info_json_custom_db, str) else info_json_custom_db
+        # FULL REPLACEMENT: Use the new mapping from the payload as the replacement
+        if request.origin_template_mappings is not None:
+            updated_active_mapping = dict(request.origin_template_mappings)
+            active_mapping_name = "origin_template_mappings"
+        elif request.translated_template_mappings is not None:
+            updated_active_mapping = dict(request.translated_template_mappings)
+            active_mapping_name = "translated_template_mappings"
+        else:
+            updated_active_mapping = {}
+            active_mapping_name = None
+        updated_fields = dict(fields_db)
+        print("[DEBUG] PATCH PAYLOAD origin_template_mappings:", request.origin_template_mappings)
+        print("[DEBUG] PATCH PAYLOAD translated_template_mappings:", request.translated_template_mappings)
+        print("[DEBUG] PATCH PAYLOAD fields:", request.fields)
+        # Save updated mappings and fields
+        if active_mapping_name:
+            update_data[active_mapping_name] = updated_active_mapping
+            # Optionally update fillable_text_info in info_json_custom if present and origin is active
+            if info_json_custom is not None and active_mapping_name == "origin_template_mappings":
+                info_json_custom["fillable_text_info"] = list(updated_active_mapping.values())
+                update_data["info_json_custom"] = json.dumps(info_json_custom)
+        # --- Remove fields not present in either mapping ---
+        # Get all keys from both mappings
+        if active_mapping_name == "origin_template_mappings":
+            other_mapping_keys = set(translated_template_mappings_db.keys())
+        else:
+            other_mapping_keys = set(origin_template_mappings_db.keys())
+        all_keys_to_keep = set(updated_active_mapping.keys()) | other_mapping_keys
+        # Only keep fields that are present in at least one mapping
+        updated_fields = {k: v for k, v in updated_fields.items() if k in all_keys_to_keep}
+        update_data["fields"] = updated_fields
+        # Optionally update required_fields in info_json_custom
+        if info_json_custom is not None:
+            info_json_custom["required_fields"] = updated_fields
+            update_data["info_json_custom"] = json.dumps(info_json_custom)
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No data to update")
+        update_data["updated_at"] = "now()"
+        result = supabase_client.client.table("workflows").update(update_data).eq(
+            "conversation_id", str(conversation_id)
+        ).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to update workflow mappings")
+        # Reload updated workflow and mappings
+        workflow, origin_template_mappings, translated_template_mappings = get_workflow_with_template_mappings_by_conversation(
+            supabase_client, str(conversation_id)
+        )
+        if isinstance(origin_template_mappings, str):
+            try:
+                origin_template_mappings = json.loads(origin_template_mappings)
+            except Exception as e:
+                print(f"Error parsing origin_template_mappings from DB as JSON: {e}")
+                origin_template_mappings = {}
+        if isinstance(translated_template_mappings, str):
+            try:
+                translated_template_mappings = json.loads(translated_template_mappings)
+            except Exception as e:
+                print(f"Error parsing translated_template_mappings from DB as JSON: {e}")
+                translated_template_mappings = {}
+        workflow_data = _serialize_workflow(workflow, origin_template_mappings, translated_template_mappings)
+        return {"success": True, "workflow_data": workflow_data}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"Error updating template mappings for conversation {conversation_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update template mappings: {exc}",
+        )
+    
 
     

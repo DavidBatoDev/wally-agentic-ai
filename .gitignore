@@ -5,3 +5,5 @@ prompt.*.txt
 view_json.json
 dump.txt
 generate.py
+venv
+__pycache__

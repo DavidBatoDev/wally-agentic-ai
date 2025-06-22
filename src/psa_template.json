@@ -1,4 +1,6 @@
 {
+  "doc_type": "PSA 1993",
+  "variation": "Greek",
   "required_fields": {
     "{first_name}": "Text input field for child's first name",
     "{middle_name}": "Text input field for child's middle name",

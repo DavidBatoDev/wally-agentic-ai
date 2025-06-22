@@ -26,7 +26,7 @@ class TranslationService:
         # Configure Gemini API
         if settings.GEMINI_API_KEY:
             genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.gemini_model = genai.GenerativeModel('gemini-pro')
+            self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
         else:
             print("Warning: GEMINI_API_KEY not provided. Gemini translation will not be available.")
             self.gemini_model = None
@@ -237,6 +237,29 @@ class TranslationService:
             'el': 'Greek'
         }
         return language_names.get(language_code.lower(), language_code.upper())
+    
+    def get_language_code(self, language_name: str) -> str:
+        """
+        Convert human-readable language name to language code (e.g., "Greek" -> "el").
+        This is case-insensitive and also accepts language codes.
+        """
+        language_map = {
+            'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German', 'it': 'Italian',
+            'pt': 'Portuguese', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean', 'zh': 'Chinese',
+            'ar': 'Arabic', 'hi': 'Hindi', 'th': 'Thai', 'vi': 'Vietnamese', 'nl': 'Dutch',
+            'sv': 'Swedish', 'da': 'Danish', 'no': 'Norwegian', 'fi': 'Finnish', 'pl': 'Polish',
+            'tr': 'Turkish', 'el': 'Greek'
+        }
+
+        # Create a lookup map that handles names and codes, all lowercase
+        lookup_map = {name.lower(): code for code, name in language_map.items()}
+        for code in language_map.keys():
+            lookup_map[code] = code  # e.g., lookup_map['el'] = 'el'
+
+        cleaned_input = language_name.strip().lower()
+
+        # Look up the code; fallback to original input if not found
+        return lookup_map.get(cleaned_input, language_name)
     
     def test_connection(self) -> bool:
         """
