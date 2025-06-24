@@ -1517,7 +1517,11 @@ async def update_template_mappings(
         else:
             updated_active_mapping = {}
             active_mapping_name = None
-        updated_fields = dict(fields_db)
+        # Use fields from the request if provided, otherwise use DB
+        if request.fields is not None:
+            updated_fields = dict(request.fields)
+        else:
+            updated_fields = dict(fields_db)
         print("[DEBUG] PATCH PAYLOAD origin_template_mappings:", request.origin_template_mappings)
         print("[DEBUG] PATCH PAYLOAD translated_template_mappings:", request.translated_template_mappings)
         print("[DEBUG] PATCH PAYLOAD fields:", request.fields)
@@ -1537,7 +1541,7 @@ async def update_template_mappings(
         all_keys_to_keep = set(updated_active_mapping.keys()) | other_mapping_keys
         # Only keep fields that are present in at least one mapping
         updated_fields = {k: v for k, v in updated_fields.items() if k in all_keys_to_keep}
-        update_data["fields"] = updated_fields
+        update_data["fields"] = _serialize_fields_for_db(updated_fields)
         # Optionally update required_fields in info_json_custom
         if info_json_custom is not None:
             info_json_custom["required_fields"] = updated_fields
