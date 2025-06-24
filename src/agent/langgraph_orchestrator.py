@@ -346,7 +346,7 @@ class LangGraphOrchestrator:
                     clean_messages.append(tool_msg)
 
                 else:
-                    # continue
+                    continue
                     # Case B: No content, only tool_calls (still wrap in list)
                     tool_msg = AIMessage(
                         content="",
