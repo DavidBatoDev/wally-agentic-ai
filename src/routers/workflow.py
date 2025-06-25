@@ -1522,9 +1522,7 @@ async def update_template_mappings(
             updated_fields = dict(request.fields)
         else:
             updated_fields = dict(fields_db)
-        print("[DEBUG] PATCH PAYLOAD origin_template_mappings:", request.origin_template_mappings)
-        print("[DEBUG] PATCH PAYLOAD translated_template_mappings:", request.translated_template_mappings)
-        print("[DEBUG] PATCH PAYLOAD fields:", request.fields)
+
         # Save updated mappings and fields
         if active_mapping_name:
             update_data[active_mapping_name] = updated_active_mapping
