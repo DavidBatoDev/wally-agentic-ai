@@ -55,7 +55,7 @@ class UpdateWorkflowFieldsRequest(BaseModel):
 
 class UpdateSingleFieldRequest(BaseModel):
     field_key: str
-    value: str
+    value: Optional[str] = None
     value_status: str = "manual"
     translated_value: Optional[str] = None
     translated_status: str = "pending"
@@ -396,12 +396,13 @@ async def update_single_workflow_field(
                     "translated_status": "pending"
                 }
         
-        # Update the specific field
+        # Update the specific field - preserve existing values for fields not provided
+        existing_field = serialized_current_fields.get(request.field_key, {})
         updated_field = {
-            "value": request.value,
-            "value_status": request.value_status,
-            "translated_value": request.translated_value,
-            "translated_status": request.translated_status
+            "value": request.value if request.value is not None else existing_field.get("value"),
+            "value_status": request.value_status if request.value is not None else existing_field.get("value_status", "pending"),
+            "translated_value": request.translated_value if request.translated_value is not None else existing_field.get("translated_value"),
+            "translated_status": request.translated_status if request.translated_value is not None else existing_field.get("translated_status", "pending")
         }
         
         serialized_current_fields[request.field_key] = updated_field

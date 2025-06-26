@@ -26,7 +26,7 @@ class TranslationService:
         # Configure Gemini API
         if settings.GEMINI_API_KEY:
             genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.gemini_model = genai.GenerativeModel('gemini-1.5-flash')
+            self.gemini_model = genai.GenerativeModel('gemini-2.0-flash-exp')
         else:
             print("Warning: GEMINI_API_KEY not provided. Gemini translation will not be available.")
             self.gemini_model = None
