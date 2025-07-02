@@ -60,6 +60,22 @@ class UpdateSingleFieldRequest(BaseModel):
     translated_value: Optional[str] = None
     translated_status: str = "pending"
 
+
+class ReplaceWorkflowRequest(BaseModel):
+    file_id: str
+    base_file_public_url: Optional[str] = None
+    template_id: str
+    template_file_public_url: Optional[str] = None
+    origin_template_mappings: Optional[Dict[str, Any]] = None
+    fields: Optional[Dict[str, FieldMetadataDict]] = None
+    template_translated_id: str
+    template_translated_file_public_url: Optional[str] = None
+    translated_template_mappings: Optional[Dict[str, Any]] = None
+    translate_to: str
+    translate_from: str
+    shapes: Optional[List[Any]] = None
+    deletion_rectangles: Optional[List[Any]] = None
+
 # ────────────────────────────────────────────────── Translation Service
 class TranslateAllFieldsRequest(BaseModel):
     target_language: str
@@ -108,10 +124,38 @@ def _parse_if_str(val):
     return val or {}
 
 
+def _convert_array_to_object(val):
+    """Convert array or string to object format expected by frontend."""
+    if val is None:
+        return {}
+    
+    # If it's a string, parse it first
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            return {}
+    
+    # If it's already an object/dict, return it
+    if isinstance(val, dict):
+        return val
+    
+    # If it's an array, convert to object using ID as key
+    if isinstance(val, list):
+        result = {}
+        for item in val:
+            if isinstance(item, dict) and 'id' in item:
+                result[item['id']] = item
+        return result
+    
+    return {}
+
+
 def _serialize_workflow(workflow_obj, origin_template_mappings=None, translated_template_mappings=None) -> Dict[str, Any]:
     """Convert CurrentDocumentInWorkflow object to dictionary with template mappings."""
     if not workflow_obj:
         return {}
+    
     workflow_dict = {
         "file_id": workflow_obj.file_id,
         "base_file_public_url": workflow_obj.base_file_public_url,
@@ -124,6 +168,8 @@ def _serialize_workflow(workflow_obj, origin_template_mappings=None, translated_
         "translate_to": workflow_obj.translate_to,
         "translate_from": getattr(workflow_obj, 'translate_from', None),
         "current_document_version_public_url": workflow_obj.current_document_version_public_url,
+        "shapes": _convert_array_to_object(getattr(workflow_obj, 'shapes', None)),
+        "deletion_rectangles": _convert_array_to_object(getattr(workflow_obj, 'deletion_rectangles', None)),
     }
     # Always parse mappings if they are strings
     if origin_template_mappings is not None:
@@ -203,150 +249,6 @@ async def get_workflow_by_conversation(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get workflow: {exc}",
         )
-
-
-@router.get("/{conversation_id}/fields", response_model=Dict[str, Any])
-async def get_workflow_fields(
-    conversation_id: UUID4,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
-    """
-    Get only the fields-related data from a conversation's workflow.
-    Useful for form rendering and field management.
-    """
-    try:
-        # ── membership / auth ---------------------------------------------------
-        _ = _guard_membership(str(conversation_id), current_user)
-
-        # ── load workflow state ------------------------------------------------
-        workflow, origin_template_mappings, translated_template_mappings = get_workflow_with_template_mappings_by_conversation(
-            supabase_client, str(conversation_id)
-        )
-        
-        if not workflow:
-            return {
-                "success": True,
-                "has_workflow": False,
-                "fields": {}
-            }
-
-        response_data = {
-            "success": True,
-            "has_workflow": True,
-            "fields": {
-                "template_required_fields": workflow.template_required_fields or {},
-                "fields": workflow.fields or {},
-            }
-        }
-        
-        # Include both template mappings if available
-        if origin_template_mappings:
-            response_data["fields"]["origin_template_mappings"] = origin_template_mappings
-        
-        if translated_template_mappings:
-            response_data["fields"]["translated_template_mappings"] = translated_template_mappings
-        
-        return response_data
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        print(f"Error getting workflow fields for conversation {conversation_id}: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get workflow fields: {exc}",
-        )
-
-
-@router.get("/{conversation_id}/template-mappings", response_model=Dict[str, Any])
-async def get_workflow_template_mappings(
-    conversation_id: UUID4,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
-    """
-    Get both origin and translated template mappings data from a conversation's workflow.
-    Useful for understanding field positioning and formatting for both templates.
-    """
-    try:
-        # ── membership / auth ---------------------------------------------------
-        _ = _guard_membership(str(conversation_id), current_user)
-
-        # ── load workflow state ------------------------------------------------
-        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
-        
-        if not workflow:
-            return {
-                "success": True,
-                "has_workflow": False,
-                "origin_template_mappings": {},
-                "translated_template_mappings": {}
-            }
-
-        # Get both template mappings
-        origin_template_mappings, translated_template_mappings = get_workflow_template_mappings_by_conversation(
-            supabase_client, str(conversation_id)
-        )
-
-        return {
-            "success": True,
-            "has_workflow": True,
-            "origin_template_mappings": origin_template_mappings or {},
-            "translated_template_mappings": translated_template_mappings or {}
-        }
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        print(f"Error getting template mappings for conversation {conversation_id}: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get template mappings: {exc}",
-        )
-
-
-@router.get("/{conversation_id}/translated-template-mappings", response_model=Dict[str, Any])
-async def get_workflow_translated_template_mappings(
-    conversation_id: UUID4,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
-    """
-    Get only the translated template mappings data from a conversation's workflow.
-    Useful for understanding field positioning and formatting for the translated template.
-    """
-    try:
-        # ── membership / auth ---------------------------------------------------
-        _ = _guard_membership(str(conversation_id), current_user)
-
-        # ── load workflow state ------------------------------------------------
-        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
-        
-        if not workflow:
-            return {
-                "success": True,
-                "has_workflow": False,
-                "translated_template_mappings": {}
-            }
-
-        # Get translated template mappings
-        translated_template_mappings = get_translated_template_mappings_by_conversation(
-            supabase_client, str(conversation_id)
-        )
-
-        return {
-            "success": True,
-            "has_workflow": True,
-            "translated_template_mappings": translated_template_mappings or {}
-        }
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        print(f"Error getting translated template mappings for conversation {conversation_id}: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get translated template mappings: {exc}",
-        )
-
 
 @router.patch("/{conversation_id}/field", response_model=Dict[str, Any])
 async def update_single_workflow_field(
@@ -966,6 +868,153 @@ async def translate_single_workflow_field(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to translate workflow field: {exc}",
         )
+
+@router.put("/{conversation_id}/replace", response_model=Dict[str, Any])
+async def replace_entire_workflow(
+    conversation_id: UUID4,
+    request: ReplaceWorkflowRequest,
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Replace the entire workflow data for a conversation and upsert agent_state.
+    This will completely replace the workflow row in the database with the provided data.
+    It also upserts the agent_state table with filtered data (excluding shapes, deletion_rectangles, mappings).
+    """
+    try:
+        # ── membership / auth ───────────────────────────────────────────────
+        _ = _guard_membership(str(conversation_id), current_user)
+
+        # ── serialize fields for database storage ───────────────────────────
+        serialized_fields = {}
+        if request.fields:
+            serialized_fields = _serialize_fields_for_db(request.fields)
+
+        # ── serialize mappings for database storage ──────────────────────── 
+        origin_mappings = request.origin_template_mappings or {}
+        translated_mappings = request.translated_template_mappings or {}
+
+        # ── prepare workflow data for database ──────────────────────────────
+        workflow_data = {
+            "conversation_id": str(conversation_id),
+            "file_id": request.file_id,
+            "base_file_public_url": request.base_file_public_url,
+            "template_id": request.template_id,
+            "template_file_public_url": request.template_file_public_url,
+            "origin_template_mappings": origin_mappings,
+            "fields": serialized_fields,
+            "template_translated_id": request.template_translated_id,
+            "template_translated_file_public_url": request.template_translated_file_public_url,
+            "translated_template_mappings": translated_mappings,
+            "translate_to": request.translate_to,
+            "translate_from": request.translate_from,
+            "shapes": request.shapes,  # Store shapes as array
+            "deletion_rectangles": request.deletion_rectangles,  # Store deletion_rectangles as array
+            "updated_at": "now()"
+        }
+
+        # ── replace workflow in database (update or insert) ─────────────────
+        # First try to update existing workflow
+        update_data = {k: v for k, v in workflow_data.items() if k != "conversation_id"}
+        update_data["updated_at"] = "now()"
+        
+        update_result = supabase_client.client.table("workflows").update(update_data).eq(
+            "conversation_id", str(conversation_id)
+        ).execute()
+
+        if not update_result.data:
+            # No existing workflow found, create a new one
+            insert_result = supabase_client.client.table("workflows").insert(workflow_data).execute()
+            
+            if not insert_result.data:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Failed to create new workflow data"
+                )
+        # If update_result.data exists, the update was successful
+
+        # ── prepare agent_state data (filtered) ─────────────────────────────
+        # Exclude shapes, deletion_rectangles, origin_template_mappings, translated_template_mappings
+        agent_state_workflow_data = {
+            "file_id": request.file_id,
+            "base_file_public_url": request.base_file_public_url,
+            "template_id": request.template_id,
+            "template_file_public_url": request.template_file_public_url,
+            "fields": serialized_fields,
+            "template_translated_id": request.template_translated_id,
+            "template_translated_file_public_url": request.template_translated_file_public_url,
+            "translate_to": request.translate_to,
+            "translate_from": request.translate_from
+        }
+
+        # ── upsert agent_state table ────────────────────────────────────────
+        try:
+            # Get current agent_state or create new structure
+            agent_state_result = supabase_client.client.table("agent_state").select("state_data").eq(
+                "conversation_id", str(conversation_id)
+            ).execute()
+
+            if agent_state_result.data:
+                # Update existing agent_state
+                current_state_data = agent_state_result.data[0].get("state_data", {})
+                current_state_data["current_document_in_workflow_state"] = agent_state_workflow_data
+
+                agent_state_update_result = supabase_client.client.table("agent_state").update({
+                    "state_data": current_state_data,
+                    "updated_at": "now()"
+                }).eq("conversation_id", str(conversation_id)).execute()
+
+                if not agent_state_update_result.data:
+                    print(f"Warning: Failed to update agent_state for conversation {conversation_id}")
+            else:
+                # Create new agent_state
+                new_state_data = {
+                    "current_document_in_workflow_state": agent_state_workflow_data
+                }
+
+                agent_state_insert_result = supabase_client.client.table("agent_state").insert({
+                    "conversation_id": str(conversation_id),
+                    "state_data": new_state_data,
+                    "created_at": "now()",
+                    "updated_at": "now()"
+                }).execute()
+
+                if not agent_state_insert_result.data:
+                    print(f"Warning: Failed to create agent_state for conversation {conversation_id}")
+
+        except Exception as agent_state_error:
+            print(f"Error upserting agent_state for conversation {conversation_id}: {agent_state_error}")
+            # Don't fail the entire request if agent_state upsert fails
+            # The workflow table upsert was successful, so we can continue
+
+        return {
+            "success": True,
+            "message": "Workflow data replaced successfully",
+            "conversation_id": str(conversation_id),
+            "workflow_data": {
+                "file_id": request.file_id,
+                "base_file_public_url": request.base_file_public_url,
+                "template_id": request.template_id,
+                "template_file_public_url": request.template_file_public_url,
+                "origin_template_mappings": origin_mappings,
+                "fields": serialized_fields,
+                "template_translated_id": request.template_translated_id,
+                "template_translated_file_public_url": request.template_translated_file_public_url,
+                "translated_template_mappings": translated_mappings,
+                "translate_to": request.translate_to,
+                "translate_from": request.translate_from,
+                "shapes": request.shapes,
+                "deletion_rectangles": request.deletion_rectangles
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"Error replacing workflow for conversation {conversation_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to replace workflow: {exc}",
+        )
     
 
     # ======================== NEW MODELS AND HELPERS FOR /insert-text-enhanced ========================
@@ -1042,543 +1091,3 @@ def get_safe_font(requested_font: str, has_unicode: bool = False) -> str:
     
     # Return mapped font or default to Helvetica
     return font_mapping.get(requested_font, "helv")
-
-# ======================== NEW ENDPOINT ========================
-@router.post(
-    "/generate/insert-text-enhanced",
-    summary="Insert text values into PDF using template data with translation support"
-)
-async def insert_text_enhanced(
-    request: FillTextEnhancedRequest,
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Insert text into PDF using template configuration from Supabase database with translation support.
-    Downloads the PDF from the file_url stored in the template record.
-    Uses info_json_custom from the workflow row if it exists, otherwise falls back to the template's info_json.
-    
-    Args:
-        request: Request containing:
-            - template_id: UUID of the original template from Supabase
-            - template_translated_id: UUID of the translated template from Supabase
-            - isTranslated: Boolean flag to determine which template and values to use
-            - fields: Dictionary of field mappings with FieldMetadata objects
-            - template_mappings: Optional dictionary of template mappings
-    
-    Returns:
-        Modified PDF file
-    """
-    
-    # 1️⃣ Determine which template to use based on isTranslated flag
-    target_template_id = request.template_translated_id if request.isTranslated else request.template_id
-    # 1b️⃣ Try to get info_json_custom from the workflow row for this conversation
-    info_json_custom = None
-    try:
-        workflow_row = supabase_client.client.table("workflows").select("info_json_custom").eq("conversation_id", request.template_id).execute()
-        if workflow_row.data and workflow_row.data[0].get("info_json_custom"):
-            info_json_custom = json.loads(workflow_row.data[0]["info_json_custom"])
-    except Exception as e:
-        print(f"Warning: Could not fetch info_json_custom: {e}")
-
-    # 2️⃣ Fetch template from Supabase (get both info_json and file_url)
-    try:
-        response = supabase_client.client.table("templates").select("info_json, file_url").eq("id", target_template_id).execute()
-        if not response.data or len(response.data) == 0:
-            raise HTTPException(status_code=404, detail=f"Template with ID {target_template_id} not found")
-        template_info = response.data[0]["info_json"]
-        file_url = response.data[0]["file_url"]
-
-        # Use info_json_custom if present
-        if info_json_custom:
-            template_info = info_json_custom
-        # Use the correct mappings for fillable_text_info
-        fillable_text_info = None
-        if request.isTranslated and hasattr(request, 'translated_template_mappings') and request.translated_template_mappings is not None:
-            print("translated")
-            # Parse template_mappings if it is a string
-            template_mappings = request.translated_template_mappings
-            if isinstance(template_mappings, str):
-                try:
-                    template_mappings = json.loads(template_mappings)
-                except Exception as e:
-                    print(f"Error parsing template_mappings as JSON: {e}")
-                    template_mappings = {}
-            # Ensure fillable_text_info is a list of dicts
-            if isinstance(template_mappings, dict):
-                fillable_text_info = list(template_mappings.values())
-            elif isinstance(template_mappings, list):
-                fillable_text_info = template_mappings
-            else:
-                print(f"[ERROR] template_mappings is not a dict or list: {type(template_mappings)}")
-                fillable_text_info = []
-        elif not request.isTranslated and hasattr(request, 'origin_template_mappings') and request.origin_template_mappings is not None:
-            print("Origin")
-            fillable_text_info = list(request.origin_template_mappings.values())
-        elif request.template_mappings is not None:
-            print("temp_mapp")
-            # Parse template_mappings if it is a string
-            template_mappings = request.template_mappings
-            fillable_text_info = template_mappings
-
-        else:
-            fillable_text_info = template_info.get("fillable_text_info", [])
-        if not file_url:
-            raise HTTPException(status_code=400, detail="Template does not have a file_url")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error fetching template: {str(e)}")
-    
-    # 3️⃣ Download PDF from file_url
-    try:
-        async with httpx.AsyncClient() as client:
-            pdf_response = await client.get(file_url)
-            pdf_response.raise_for_status()
-            pdf_bytes = pdf_response.content
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error downloading PDF from file_url: {str(e)}")
-    
-    # 4️⃣ Get local Unicode font for Greek text support
-    unicode_font_path = get_local_unicode_font()
-    if not unicode_font_path:
-        print("Warning: No local Unicode font found. Greek text may not display correctly.")
-    
-    # 5️⃣ Create updated fillable_text_info with provided values
-    print(f"fillable_text_info type: {type(fillable_text_info)}")
-    print(f"[DEBUG] fillable_text_info length: {len(fillable_text_info)}")
-    for key, field in fillable_text_info.items():
-        print(f"Key: {key}, Field: {field}")
-    print(f"[DEBUG] request.fields keys: {list(request.fields.keys())}")
-    updated_fields = []
-    inserted_count = 0
-    for key, field in fillable_text_info.items():
-        # Create a copy of the field
-        updated_field = field
-
-        # Get the field key
-        field_key = key
-
-        # Check if we have this field in our request
-        if field_key in request.fields:
-            field_metadata = request.fields[field_key]
-            # Determine which value to use based on isTranslated flag
-            if request.isTranslated:
-                # Use translated_value if available
-                if field_metadata.translated_value is not None:
-                    updated_field["value"] = field_metadata.translated_value
-                    print(f"[DEBUG] Inserting translated value for {field_key}: {field_metadata.translated_value}")
-                else:
-                    print(f"[DEBUG] No translated_value for {field_key}, skipping")
-            else:
-                # Use regular value if available
-                if field_metadata.value is not None:
-                    updated_field["value"] = field_metadata.value
-                    print(f"[DEBUG] Inserting value for {field_key}: {field_metadata.value}")
-                else:
-                    print(f"[DEBUG] No value for {field_key}, skipping")
-        else:
-            print(f"[DEBUG] Field key {field_key} not in request.fields, skipping")
-        updated_fields.append(updated_field)
-    
-    # 6️⃣ Open PDF document
-    doc = None
-    try:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cannot open PDF: {e}")
-    
-    # 7️⃣ Insert text for each field that has a value
-    try:
-        for field in updated_fields:
-            # Skip fields without values
-            if not field.get("value"):
-                print(f"[DEBUG] Skipping field {field.get('key')} - no value to insert")
-                continue
-            inserted_count += 1
-            page = doc[field["page_number"] - 1]
-            position = field["position"]
-            bbox = Rect(position["x0"], position["y0"], position["x1"], position["y1"])
-            
-            # Font handling with robust fallback for Unicode/Greek text
-            font_info = field["font"]
-            requested_font = font_info.get("name", "Helvetica")
-            text_value = field["value"]
-            
-            # Check if text contains Unicode characters
-            has_unicode_chars = has_unicode_text(text_value)
-            
-            # FORCE TEXT COLOR TO ALWAYS BE BLACK - Override any template color
-            r, g, b = 0, 0, 0  # Black color (RGB: 0, 0, 0)
-            
-            # Alignment handling
-            alignment = field.get("alignment", "left").lower()
-            font_size = font_info.get("size", 10)
-            
-            # Try to insert text with proper Unicode support
-            text_inserted = False
-            
-            # Method 1: Try with local NotoSans font if available and text has Unicode chars
-            if unicode_font_path and has_unicode_chars:
-                try:
-                    # Load the local NotoSans font
-                    with open(unicode_font_path, "rb") as font_file:
-                        fontfile = font_file.read()
-                    
-                    font = fitz.Font(fontbuffer=fontfile)
-                    
-                    if alignment == "left":
-                        baseline = position["y1"] - 0.15 * font_size
-                        # Use the font object directly with insert_text
-                        text_writer = fitz.TextWriter(page.rect, color=(r, g, b))  # Set color here
-                        text_writer.append(
-                            (position["x0"], baseline),
-                            text_value,
-                            font=font,
-                            fontsize=font_size
-                        )
-                        text_writer.write_text(page)
-                    else:
-                        if alignment == "center":
-                            align_flag = TEXT_ALIGN_CENTER
-                        elif alignment == "right":
-                            align_flag = TEXT_ALIGN_RIGHT
-                        elif alignment == "justify":
-                            align_flag = TEXT_ALIGN_JUSTIFY
-                        else:
-                            align_flag = TEXT_ALIGN_LEFT
-                        
-                        # For textbox, we need to use the fontname from the font
-                        page.insert_textbox(
-                            bbox,
-                            text_value,
-                            fontname=font.name,
-                            fontsize=font_size,
-                            color=(r, g, b),  # Always black
-                            align=align_flag
-                        )
-                    
-                    text_inserted = True
-                    print(f"Successfully inserted Unicode text with NotoSans font (black): {text_value[:50]}...")
-                    
-                except Exception as font_error:
-                    print(f"NotoSans font insertion failed: {font_error}")
-            
-            # Method 2: Try with local font for regular text (even if not Unicode)
-            elif unicode_font_path and not has_unicode_chars:
-                try:
-                    # Use NotoSans for all text for consistency
-                    with open(unicode_font_path, "rb") as font_file:
-                        fontfile = font_file.read()
-                    
-                    font = fitz.Font(fontbuffer=fontfile)
-                    
-                    if alignment == "left":
-                        baseline = position["y1"] - 0.15 * font_size
-                        # Use the font object directly with insert_text
-                        text_writer = fitz.TextWriter(page.rect, color=(r, g, b))  # Set color here
-                        text_writer.append(
-                            (position["x0"], baseline),
-                            text_value,
-                            font=font,
-                            fontsize=font_size
-                        )
-                        text_writer.write_text(page)
-                    else:
-                        if alignment == "center":
-                            align_flag = TEXT_ALIGN_CENTER
-                        elif alignment == "right":
-                            align_flag = TEXT_ALIGN_RIGHT
-                        elif alignment == "justify":
-                            align_flag = TEXT_ALIGN_JUSTIFY
-                        else:
-                            align_flag = TEXT_ALIGN_LEFT
-                        
-                        # For textbox, we need to use the fontname from the font
-                        page.insert_textbox(
-                            bbox,
-                            text_value,
-                            fontname=font.name,
-                            fontsize=font_size,
-                            color=(r, g, b),  # Always black
-                            align=align_flag
-                        )
-                    
-                    text_inserted = True
-                    print(f"Successfully inserted text with NotoSans font (black): {text_value[:50]}...")
-                    
-                except Exception as font_error:
-                    print(f"NotoSans font insertion failed for regular text: {font_error}")
-            
-            # Method 3: Fallback to built-in fonts with encoding
-            if not text_inserted:
-                safe_font = get_safe_font(requested_font, has_unicode_chars)
-                if safe_font == "unicode-font-needed":
-                    safe_font = "helv"  # Fallback to built-in
-                
-                try:
-                    if alignment == "left":
-                        baseline = position["y1"] - 0.15 * font_size
-                        page.insert_text(
-                            (position["x0"], baseline),
-                            text_value,
-                            fontname=safe_font,
-                            fontsize=font_size,
-                            color=(r, g, b)  # Always black
-                        )
-                    else:
-                        if alignment == "center":
-                            align_flag = TEXT_ALIGN_CENTER
-                        elif alignment == "right":
-                            align_flag = TEXT_ALIGN_RIGHT
-                        elif alignment == "justify":
-                            align_flag = TEXT_ALIGN_JUSTIFY
-                        else:
-                            align_flag = TEXT_ALIGN_LEFT
-                        
-                        page.insert_textbox(
-                            bbox,
-                            text_value,
-                            fontname=safe_font,
-                            fontsize=font_size,
-                            color=(r, g, b),  # Always black
-                            align=align_flag
-                        )
-                    
-                    text_inserted = True
-                    print(f"Successfully inserted text with built-in font (black): {text_value[:50]}...")
-                    
-                except Exception as builtin_error:
-                    print(f"Built-in font insertion failed: {builtin_error}")
-            
-            # Method 4: Last resort - try without encoding
-            if not text_inserted:
-                try:
-                    if alignment == "left":
-                        baseline = position["y1"] - 0.15 * font_size
-                        page.insert_text(
-                            (position["x0"], baseline),
-                            text_value,
-                            fontname="helv",
-                            fontsize=font_size,
-                            color=(r, g, b)  # Always black
-                        )
-                    else:
-                        if alignment == "center":
-                            align_flag = TEXT_ALIGN_CENTER
-                        elif alignment == "right":
-                            align_flag = TEXT_ALIGN_RIGHT
-                        elif alignment == "justify":
-                            align_flag = TEXT_ALIGN_JUSTIFY
-                        else:
-                            align_flag = TEXT_ALIGN_LEFT
-                        
-                        page.insert_textbox(
-                            bbox,
-                            text_value,
-                            fontname="helv",
-                            fontsize=font_size,
-                            color=(r, g, b),  # Always black
-                            align=align_flag
-                        )
-                    
-                    print(f"Inserted text with last resort method (black): {text_value[:50]}...")
-                    
-                except Exception as final_error:
-                    print(f"All text insertion methods failed for: {text_value[:50]}... Error: {final_error}")
-        
-        # 8️⃣ Save modified PDF to buffer
-        buf = io.BytesIO()
-        try:
-            # Save with garbage collection and compression for better Unicode handling
-            doc.save(buf, garbage=4, deflate=True, clean=True)
-            print(f"PDF saved successfully with advanced options")
-        except Exception as save_error:
-            print(f"Error saving with advanced options: {save_error}")
-            # Fallback to basic save
-            buf = io.BytesIO()  # Reset buffer
-            doc.save(buf)
-            print(f"PDF saved with basic options")
-        
-        # Always close the document
-        doc.close()
-        doc = None  # Clear reference
-        
-        # Get final buffer size AFTER all operations are complete
-        final_buffer_size = buf.tell()
-        buf.seek(0)  # Reset position for reading
-        
-        # Validate PDF content
-        if final_buffer_size == 0:
-            raise HTTPException(status_code=500, detail="Generated PDF is empty")
-            
-        # Check if buffer contains PDF header
-        pdf_header = buf.read(4)
-        buf.seek(0)  # Reset position again
-        print(f"PDF header: {pdf_header}")
-        
-        if not pdf_header.startswith(b'%PDF'):
-            raise HTTPException(status_code=500, detail="Generated file is not a valid PDF")
-        
-        print(f"[DEBUG] Total fields inserted into PDF: {inserted_count}")
-        
-    except Exception as e:
-        # Make sure to close the document even if there's an error
-        if doc:
-            doc.close()
-        raise HTTPException(status_code=500, detail=f"PDF modification failed: {str(e)}")
-    
-    # 9️⃣ Return the modified PDF using StreamingResponse
-    template_type = "translated" if request.isTranslated else "original"
-    
-    # Debug: Log response details
-    print(f"Returning PDF: size={final_buffer_size} bytes, template_type={template_type}")
-    
-    headers = {
-        "Content-Disposition": f'attachment; filename="filled_{template_type}_template_{target_template_id}.pdf"',
-        "Cache-Control": "no-cache"
-    }
-    
-    print(f"Response headers: {headers}")
-    
-    return StreamingResponse(
-        io.BytesIO(buf.getvalue()),  # Create a fresh BytesIO with the complete data
-        media_type="application/pdf", 
-        headers=headers
-    )
-
-class UpdateTemplateMappingsRequest(BaseModel):
-    origin_template_mappings: Optional[Dict[str, Any]] = None
-    translated_template_mappings: Optional[Dict[str, Any]] = None
-    fields: Optional[Dict[str, Any]] = None
-    info_json_custom: Optional[Dict[str, Any]] = None  # NEW: allow saving custom info_json
-
-@router.patch("/{conversation_id}/template-mappings", response_model=Dict[str, Any])
-async def update_template_mappings(
-    conversation_id: UUID4,
-    request: UpdateTemplateMappingsRequest,
-    current_user: User = Depends(get_current_user),
-) -> Dict[str, Any]:
-    """
-    Update origin/translated template mappings, fields, and/or info_json_custom for a workflow.
-    Supports move, resize, add, and delete of text boxes, keeping mappings and fields in sync.
-    """
-    try:
-        _ = _guard_membership(str(conversation_id), current_user)
-        workflow = load_workflow_by_conversation(supabase_client, str(conversation_id))
-        if not workflow:
-            raise HTTPException(status_code=404, detail="No workflow found for this conversation")
-        update_data = {}
-        # Check if info_json_custom is present in workflow row
-        workflow_row = supabase_client.client.table("workflows").select("info_json_custom, template_id, origin_template_mappings, translated_template_mappings, fields").eq("conversation_id", str(conversation_id)).execute()
-        info_json_custom_db = None
-        template_id = None
-        origin_template_mappings_db = {}
-        translated_template_mappings_db = {}
-        fields_db = {}
-        if workflow_row.data and len(workflow_row.data) > 0:
-            info_json_custom_db = workflow_row.data[0].get("info_json_custom")
-            template_id = workflow_row.data[0].get("template_id")
-            origin_template_mappings_db = workflow_row.data[0].get("origin_template_mappings") or {}
-            translated_template_mappings_db = workflow_row.data[0].get("translated_template_mappings") or {}
-            fields_db = workflow_row.data[0].get("fields") or {}
-            if isinstance(origin_template_mappings_db, str):
-                try:
-                    origin_template_mappings_db = json.loads(origin_template_mappings_db)
-                except Exception:
-                    origin_template_mappings_db = {}
-            if isinstance(translated_template_mappings_db, str):
-                try:
-                    translated_template_mappings_db = json.loads(translated_template_mappings_db)
-                except Exception:
-                    translated_template_mappings_db = {}
-            if isinstance(fields_db, str):
-                try:
-                    fields_db = json.loads(fields_db)
-                except Exception:
-                    fields_db = {}
-        # If info_json_custom is not present and not provided in request, initialize from template
-        if not info_json_custom_db and request.info_json_custom is None:
-            template_row = supabase_client.client.table("templates").select("info_json").eq("id", template_id).execute()
-            if not template_row.data or len(template_row.data) == 0:
-                raise HTTPException(status_code=404, detail="Template not found for workflow")
-            template_info_json = template_row.data[0]["info_json"]
-            update_data["info_json_custom"] = json.dumps(template_info_json)
-            info_json_custom = template_info_json.copy() if hasattr(template_info_json, 'copy') else dict(template_info_json)
-        elif request.info_json_custom is not None:
-            update_data["info_json_custom"] = json.dumps(request.info_json_custom)
-            info_json_custom = request.info_json_custom.copy() if hasattr(request.info_json_custom, 'copy') else dict(request.info_json_custom)
-        else:
-            info_json_custom = json.loads(info_json_custom_db) if isinstance(info_json_custom_db, str) else info_json_custom_db
-        # FULL REPLACEMENT: Use the new mapping from the payload as the replacement
-        if request.origin_template_mappings is not None:
-            updated_active_mapping = dict(request.origin_template_mappings)
-            active_mapping_name = "origin_template_mappings"
-        elif request.translated_template_mappings is not None:
-            updated_active_mapping = dict(request.translated_template_mappings)
-            active_mapping_name = "translated_template_mappings"
-        else:
-            updated_active_mapping = {}
-            active_mapping_name = None
-        # Use fields from the request if provided, otherwise use DB
-        if request.fields is not None:
-            updated_fields = dict(request.fields)
-        else:
-            updated_fields = dict(fields_db)
-
-        # Save updated mappings and fields
-        if active_mapping_name:
-            update_data[active_mapping_name] = updated_active_mapping
-            # Optionally update fillable_text_info in info_json_custom if present and origin is active
-            if info_json_custom is not None and active_mapping_name == "origin_template_mappings":
-                info_json_custom["fillable_text_info"] = list(updated_active_mapping.values())
-                update_data["info_json_custom"] = json.dumps(info_json_custom)
-        # --- Remove fields not present in either mapping ---
-        # Get all keys from both mappings
-        if active_mapping_name == "origin_template_mappings":
-            other_mapping_keys = set(translated_template_mappings_db.keys())
-        else:
-            other_mapping_keys = set(origin_template_mappings_db.keys())
-        all_keys_to_keep = set(updated_active_mapping.keys()) | other_mapping_keys
-        # Only keep fields that are present in at least one mapping
-        updated_fields = {k: v for k, v in updated_fields.items() if k in all_keys_to_keep}
-        update_data["fields"] = _serialize_fields_for_db(updated_fields)
-        # Optionally update required_fields in info_json_custom
-        if info_json_custom is not None:
-            info_json_custom["required_fields"] = updated_fields
-            update_data["info_json_custom"] = json.dumps(info_json_custom)
-        if not update_data:
-            raise HTTPException(status_code=400, detail="No data to update")
-        update_data["updated_at"] = "now()"
-        result = supabase_client.client.table("workflows").update(update_data).eq(
-            "conversation_id", str(conversation_id)
-        ).execute()
-        if not result.data:
-            raise HTTPException(status_code=500, detail="Failed to update workflow mappings")
-        # Reload updated workflow and mappings
-        workflow, origin_template_mappings, translated_template_mappings = get_workflow_with_template_mappings_by_conversation(
-            supabase_client, str(conversation_id)
-        )
-        if isinstance(origin_template_mappings, str):
-            try:
-                origin_template_mappings = json.loads(origin_template_mappings)
-            except Exception as e:
-                print(f"Error parsing origin_template_mappings from DB as JSON: {e}")
-                origin_template_mappings = {}
-        if isinstance(translated_template_mappings, str):
-            try:
-                translated_template_mappings = json.loads(translated_template_mappings)
-            except Exception as e:
-                print(f"Error parsing translated_template_mappings from DB as JSON: {e}")
-                translated_template_mappings = {}
-        workflow_data = _serialize_workflow(workflow, origin_template_mappings, translated_template_mappings)
-        return {"success": True, "workflow_data": workflow_data}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        print(f"Error updating template mappings for conversation {conversation_id}: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update template mappings: {exc}",
-        )
-    
-
-    

@@ -229,6 +229,8 @@ def load_workflow_state(
             translate_to=record.get("translate_to"),
             translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
+            shapes=record.get("shapes", []) or [],
+            deletion_rectangles=record.get("deletion_rectangles", []) or [],
         )
         
         return current_doc
@@ -301,6 +303,8 @@ def load_workflow_by_conversation(
             translate_to=record.get("translate_to"),
             translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
+            shapes=record.get("shapes", []) or [],
+            deletion_rectangles=record.get("deletion_rectangles", []) or [],
         )
         
         return current_doc
@@ -404,6 +408,8 @@ def get_workflow_with_template_mappings_by_conversation(
             translate_to=record.get("translate_to"),
             translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
+            shapes=record.get("shapes", []) or [],
+            deletion_rectangles=record.get("deletion_rectangles", []) or [],
         )
         
         # Get both template mappings
