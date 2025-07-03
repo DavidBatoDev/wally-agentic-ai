@@ -52,11 +52,7 @@ class Settings:
     GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     
     # CORS settings
-    CORS_ORIGINS: list = [
-        "http://localhost:3000",  # Next.js frontend default port
-        "http://localhost:8000",  # FastAPI backend
-        # Add other allowed origins if needed
-    ]
+    CORS_ORIGINS: list = ["*"]
 
     # LLM settings
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "my-gemini-api-key")
