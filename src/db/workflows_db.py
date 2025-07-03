@@ -55,7 +55,8 @@ def _extract_template_mappings(db_client: SupabaseClient, template_id: str) -> D
                 "page_number": item.get("page_number", 1),
                 "bbox_center": bbox_center,
                 "rotation": item.get("rotation", 0),
-                "alignment": item.get("alignment", "left")
+                "alignment": item.get("alignment", "left"),
+                "character_spacing": item.get("character_spacing", 0),
             }
         
         return template_mappings
@@ -229,6 +230,8 @@ def load_workflow_state(
             translate_to=record.get("translate_to"),
             translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
+            shapes=record.get("shapes", []) or [],
+            deletion_rectangles=record.get("deletion_rectangles", []) or [],
         )
         
         return current_doc
@@ -301,6 +304,8 @@ def load_workflow_by_conversation(
             translate_to=record.get("translate_to"),
             translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
+            shapes=record.get("shapes", []) or [],
+            deletion_rectangles=record.get("deletion_rectangles", []) or [],
         )
         
         return current_doc
@@ -404,6 +409,8 @@ def get_workflow_with_template_mappings_by_conversation(
             translate_to=record.get("translate_to"),
             translate_from=record.get("translate_from"),
             current_document_version_public_url=record.get("current_document_version_public_url") or "",
+            shapes=record.get("shapes", []) or [],
+            deletion_rectangles=record.get("deletion_rectangles", []) or [],
         )
         
         # Get both template mappings

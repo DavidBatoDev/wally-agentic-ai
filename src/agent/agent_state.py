@@ -55,6 +55,8 @@ class CurrentDocumentInWorkflow(BaseModel):
     translate_to: Optional[str] = None  # Language to translate the document to, if applicable
     translate_from: Optional[str] = None  # Language the document is currently in, if applicable
     current_document_version_public_url: str = "" # ID of the current document version
+    shapes: Optional[List[Any]] = Field(default_factory=list) # Drawing shapes overlaid on the document
+    deletion_rectangles: Optional[List[Any]] = Field(default_factory=list) # Rectangles marking areas for deletion
 
     class Config:
         arbitrary_types_allowed = True
