@@ -119,12 +119,12 @@ class LangGraphOrchestrator:
             }
         )
 
-        g.add_edge("ask_user_desired_langauge", "agent")
+        g.add_edge("ask_user_desired_langauge", "save_state_graph")
 
         # Generic tool-invocation → save
         g.add_edge("tools",            "save_state_graph")
         g.add_edge("find_template",            "agent")
-        g.add_edge("extract_required_fields",  "agent")
+        g.add_edge("extract_required_fields",  "save_state_graph")
 
         # Always persist then finalise
         g.add_edge("save_state_graph", "finalize")
@@ -212,12 +212,6 @@ class LangGraphOrchestrator:
         This method now uses the SmartRouter if available, otherwise falls back
         to the original rule-based routing logic.
         """
-        # Check for recursion guard - avoid infinite loops
-        ask_language_count = state.context.get("ask_language_count", 0)
-        if ask_language_count >= 2:
-            print(f"🔧 [ROUTE_NEXT] Recursion guard: ask_language called {ask_language_count} times, routing to save")
-            return "save"
-        
         # Try smart routing first if enabled and available
         if self.use_smart_routing and self.smart_router:
             try:
@@ -227,9 +221,6 @@ class LangGraphOrchestrator:
             except Exception as e:
                 log.warning(f"Smart router failed for conversation {state.conversation_id}: {e}. Using fallback.")
                 # Continue to fallback routing below
-        
-        # Fallback: route to save to end the workflow
-        return "save"
 
     # System Prompt
     def _create_system_message(self, state: AgentState) -> str:
@@ -248,7 +239,7 @@ class LangGraphOrchestrator:
             ctx.append("Document uploaded and analyzed as templatable. Ask user for desired translation language.")
         elif state.translate_to and not current_doc.template_id:
             ctx.append("Target language specified. Find matching template based on document analysis.")
-        elif current_doc.template_id and not current_doc.fields:
+        elif current_doc.template_id and current_doc.fields and all(f.value_status == "pending" for f in current_doc.fields.values()):
             ctx.append("Template found. Extract required field values from the uploaded document.")
         elif current_doc.fields and state.translate_to:
             # Check if any fields need translation
@@ -322,71 +313,6 @@ class LangGraphOrchestrator:
             "After all tool calls, send your normal assistant reply explaining the current step."
         )
 
-        # Check if we just completed an analysis
-        if state.context.get("analysis_completed"):
-            analysis_result = state.context.get("analysis_result", {})
-            if analysis_result.get("is_templatable"):
-                ctx.append(
-                    f"JUST COMPLETED: Document analysis. Results: {analysis_result['doc_type']} "
-                    f"({analysis_result['variation']}) in {analysis_result['detected_language']}, "
-                    f"templatable: Yes. Provide a detailed summary of the analysis results "
-                    f"including document type, classification, language, and next steps."
-                )
-            else:
-                ctx.append(
-                    f"JUST COMPLETED: Document analysis. Document is not templatable. "
-                    f"Explain this to the user and suggest alternatives."
-                )
-            # Clear the flag so it doesn't repeat
-            state.context.pop("analysis_completed", None)
-        
-        # Check if we just completed template finding
-        elif state.context.get("template_found"):
-            template_info = state.context.get("template_info", {})
-            ctx.append(
-                f"JUST COMPLETED: Template matching. Found {template_info.get('original_template', 'template')} "
-                f"for translation to {state.translate_to}. Explain the template matching success "
-                f"and mention that field extraction will begin next."
-            )
-            state.context.pop("template_found", None)
-        
-        # Check if we just completed field extraction
-        elif state.context.get("extraction_completed"):
-            extraction_info = state.context.get("extraction_info", {})
-            ctx.append(
-                f"JUST COMPLETED: Field extraction via OCR. Extracted {extraction_info.get('extracted_count', 0)} "
-                f"fields successfully. Provide a summary and ask user to review the extracted values."
-            )
-            state.context.pop("extraction_completed", None)
-        
-        # Check if we need to ask for language preference
-        elif state.context.get("language_request"):
-            language_info = state.context.get("language_info", {})
-            ctx.append(
-                f"LANGUAGE REQUEST: Document ({language_info.get('doc_type', 'document')}) "
-                f"in {language_info.get('detected_language', 'unknown')} is templatable. "
-                f"Ask user what language they want to translate it to. Be conversational and helpful."
-            )
-            state.context.pop("language_request", None)
-        
-        # Check for errors
-        elif state.context.get("analysis_error"):
-            error = state.context.get("analysis_error")
-            ctx.append(f"ERROR OCCURRED: Document analysis failed: {error}. Explain this error to the user.")
-            state.context.pop("analysis_error", None)
-        elif state.context.get("template_error"):
-            error = state.context.get("template_error")
-            ctx.append(f"ERROR OCCURRED: Template matching failed: {error}. Explain this error and suggest manual processing.")
-            state.context.pop("template_error", None)
-        elif state.context.get("extraction_error"):
-            error = state.context.get("extraction_error")
-            ctx.append(f"ERROR OCCURRED: Field extraction failed: {error}. Explain this error to the user.")
-            state.context.pop("extraction_error", None)
-        elif state.context.get("language_request_error"):
-            error = state.context.get("language_request_error")
-            ctx.append(f"ERROR OCCURRED: Language request failed: {error}. Ask user to specify translation language.")
-            state.context.pop("language_request_error", None)
-
         return (
             base
             + f"Current state: [{self._state_summary(state)}]. "
@@ -407,38 +333,23 @@ class LangGraphOrchestrator:
         for msg in state.messages:
             # If it's an AIMessage and has tool_calls present
             if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                # Skip AIMessages with tool_calls entirely - they shouldn't be sent back to LLM
-                # The tool execution results (ToolMessages) are what matter for context
-                print(f"🔧 [AGENT_NODE] Skipping AIMessage with tool_calls")
+                # Only include messages that have content (skip tool-only messages with empty content)
+                if msg.content and msg.content.strip():
+                    clean_messages.append(msg)
+                # Skip tool-only messages with empty content to avoid Gemini errors
                 continue
             elif isinstance(msg, AIMessage) and msg.content.strip() == "":
                 # If it's an AIMessage with empty content, skip it
-                print(f"🔧 [AGENT_NODE] Skipping empty AIMessage")
                 continue
 
-            # Everything else (e.g., HumanMessage, ToolMessage, AIMessage without tool_calls)
+            # Everything else (e.g., HumanMessage or AIMessage without tool_calls)
             clean_messages.append(msg)
-
-        # Debug: Check for any remaining empty messages
-        print(f"🔧 [AGENT_NODE] Cleaned {len(clean_messages)} messages for LLM")
-        for i, msg in enumerate(clean_messages):
-            msg_type = type(msg).__name__
-            content_preview = msg.content[:50] + "..." if len(msg.content) > 50 else msg.content
-            has_tool_calls = hasattr(msg, 'tool_calls') and getattr(msg, 'tool_calls', None)
-            print(f"🔧 [AGENT_NODE] Message {i}: {msg_type} - '{content_preview}' (has_tools: {has_tool_calls})")
-            
-            if msg.content.strip() == "":
-                print(f"❌ [AGENT_NODE] WARNING: Empty content message: {msg}")
 
         # 2) Build the SystemMessage with the current workflow context
         sys_msg = SystemMessage(content=self._create_system_message(state))
-        
-        # Debug: Print system message for troubleshooting
-        print(f"🔧 [AGENT_NODE] System message: {sys_msg.content[:200]}...")
 
         # 3) Prepend the system prompt to the clean chat history
         llm_messages: List[BaseMessage] = [sys_msg, *clean_messages]
-        print(f"🔧 [AGENT_NODE] Sending {len(llm_messages)} messages to LLM (including system message)")
 
         # 4) Invoke the LLM (which may emit one or more tool_calls)
         response: AIMessage = await self.llm_with_core_tools.ainvoke(llm_messages)
@@ -453,44 +364,17 @@ class LangGraphOrchestrator:
 
         print("🤖🙏🏻 MSG response", response)
         
-        # Only add response to messages if it has content OR tool_calls
-        # This prevents completely empty messages from polluting the conversation
-        if (response.content and response.content.strip()) or getattr(response, "tool_calls", None):
-            state.messages.append(response)
-            print(f"✅ [AGENT_NODE] Added response to state.messages")
-            
-            # Create database message immediately for real-time user feedback
-            if response.content and response.content.strip():
-                try:
-                    self.db_client.create_message(
-                        conversation_id=state.conversation_id,
-                        sender="assistant",
-                        kind="text",
-                        body=json.dumps({"text": response.content}),
-                    )
-                    print(f"✅ [AGENT_NODE] Created immediate database message")
-                except Exception as e:
-                    log.error(f"Failed to create immediate database message: {e}")
-        else:
-            print(f"❌ [AGENT_NODE] Skipping empty response - no content or tool_calls")
-            
-            # Create a fallback response when LLM returns empty content
-            fallback_message = "I'm processing your request. Please let me know what language you'd like me to translate your document to."
-            fallback_response = AIMessage(content=fallback_message)
-            state.messages.append(fallback_response)
-            
-            # Create database message for fallback
-            try:
-                self.db_client.create_message(
-                    conversation_id=state.conversation_id,
-                    sender="assistant", 
-                    kind="text",
-                    body=json.dumps({"text": fallback_message}),
-                )
-                print(f"✅ [AGENT_NODE] Created fallback database message")
-            except Exception as e:
-                log.error(f"Failed to create fallback database message: {e}")
+        # Create message in database
+        if response.content.strip() != "":
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({"text": response.content}),
+            )
 
+
+        state.messages.append(response)
         state.workflow_status = WorkflowStatus.IN_PROGRESS
         return state
 
@@ -553,6 +437,19 @@ class LangGraphOrchestrator:
         """
         print(f"🔍 [ANALYZE_DOC] Starting for conversation: {state.conversation_id}")
         
+        # Insert a message that we're analyzing the document
+        analysis_msg = AIMessage(content="🔍 Analyzing the uploaded file")
+        state.messages.append(analysis_msg)
+        
+        # Create message in database too
+        self.db_client.create_message(
+            conversation_id=state.conversation_id,
+            sender="assistant",
+            kind="text",
+            body=json.dumps({
+                "text": "🔍 Analyzing...."
+            }),
+        )
         # Mark this step as done
         state.steps_done.append("analyze_doc")
 
@@ -588,18 +485,48 @@ class LangGraphOrchestrator:
             language = normalize_language(analysis_result.get("detected_language", "unknown"))
             state.latest_upload.translated_from = normalize_language(language)
             
-            # Store analysis context for the LLM to generate appropriate response
-            state.context["analysis_completed"] = True
-            state.context["analysis_result"] = {
-                "is_templatable": is_templatable,
-                "doc_type": analysis_result.get("doc_type", "unknown"),
-                "variation": analysis_result.get("variation", "standard"),
-                "doc_classification": analysis_result.get("doc_classification", "other"),
-                "detected_language": language,
-                "page_count": analysis_result.get("page_count"),
-                "page_size": analysis_result.get("page_size"),
-                "content_summary": analysis_result.get("content_summary", "")
-            }
+            # Create response based on templatable status
+            if is_templatable:
+                # Create detailed summary for templatable documents
+                doc_type = analysis_result.get("doc_type", "unknown")
+                variation = analysis_result.get("variation", "standard")
+                doc_classification = analysis_result.get("doc_classification", "other")
+
+                summary_parts = [
+                    f"✅ **Document Analysis Complete**",
+                    f"• **Type**: {doc_type.replace('_', ' ').title()}\n",
+                    f"• **Classification**: {doc_classification.replace('_', ' ').title()}\n",
+                    f"• **Variation**: {variation.replace('_', ' ').title()}\n",
+                    f"• **Language**: {language.replace('_', ' ').title()}\n",
+                    f"• **Templatable**: {'Yes' if is_templatable else 'No'}\n",
+                ]
+                
+                if analysis_result.get("page_count"):
+                    summary_parts.append(f"• **Pages**: {analysis_result['page_count']}\n")
+                if analysis_result.get("page_size"):
+                    summary_parts.append(f"• **Size**: {analysis_result['page_size']}\n")
+
+                upload_summary = analysis_result.get("content_summary", "")
+                summary_parts.append(f"• **Summary**: {upload_summary}\n")
+                
+                response_text = "\n".join(summary_parts)
+            else:
+                # Simple response for non-templatable documents
+                upload_summary = analysis_result.get("content_summary", "Document analyzed")
+                response_text = f"{upload_summary}\n\nThis document appears to not be related to document translation or template processing. So I won't proceed to the document translation"
+            
+            summary_msg = AIMessage(content=response_text)
+            state.messages.append(summary_msg)
+            
+            # Create message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": response_text
+                }),
+            )
 
             state.workflow_status = WorkflowStatus.IN_PROGRESS
             
@@ -607,9 +534,19 @@ class LangGraphOrchestrator:
             
         except Exception as e:
             print(f"❌ [ANALYZE_DOC] Error during analysis: {str(e)}")
+            error_msg = AIMessage(content=f"❌ Error analyzing document: {str(e)}")
+            state.messages.append(error_msg)
             
-            # Store error context for LLM to generate appropriate error message
-            state.context["analysis_error"] = str(e)
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": f"❌ Error analyzing document: {str(e)}"
+                }),
+            )
+            
             state.workflow_status = WorkflowStatus.FAILED
         
         return state
@@ -620,6 +557,20 @@ class LangGraphOrchestrator:
             This calls the template matching helper to find appropriate template pairs.
             """
             print(f"🔍 [FIND_TEMPLATE] Starting for conversation: {state.conversation_id}")
+
+            # Insert a message that we're finding templates
+            template_msg = AIMessage(content="🔍 Finding the best matching templates for your document...")
+            state.messages.append(template_msg)
+
+            # Create message in database too
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "🔍 Finding the best matching templates for your document..."
+                }),
+            )
 
             # Mark this step as done
             state.steps_done.append("find_template")
@@ -705,17 +656,39 @@ class LangGraphOrchestrator:
                     state.current_document_in_workflow_state.template_translated_id = ""
                     state.current_document_in_workflow_state.template_translated_file_public_url = ""
                 
-                # Store template matching context for LLM to generate dynamic response
-                state.context["template_found"] = True
-                state.context["template_info"] = {
-                    "original_template": original_template.get('variation', 'unknown'),
-                    "doc_type": original_template.get('doc_type', 'unknown'),
-                    "translated_template": translated_template.get('variation') if translated_template else None,
-                    "required_fields_count": len(template_required_fields),
-                    "filename": latest_templatable_upload.filename,
-                    "translate_from": normalized_translate_from,
-                    "translate_to": normalized_translate_to
-                }
+                # Create success message
+                success_parts = [
+                    f"[Intermediate Step]"
+                    f"✅ **Template Matching Complete**",
+                    f"📋 **Document Type**: {original_template.get('doc_type', 'unknown').replace('_', ' ').title()}",
+                    f"🔧 **Original Template**: {original_template.get('variation', 'unknown')}",
+                ]
+                
+                if translated_template:
+                    success_parts.append(f"🌐 **Translated Template**: {translated_template.get('variation', 'unknown')}")
+                else:
+                    success_parts.append(f"🌐 **Translation**: Dynamic translation to {normalized_translate_to.title()}")
+                
+                success_parts.extend([
+                    f"📝 **Required Fields**: {len(template_required_fields)} fields to extract",
+                    f"📄 **Processing**: {latest_templatable_upload.filename}",
+                    f"🔤 **Languages**: {normalized_translate_from.title()} → {normalized_translate_to.title()}"
+                ])
+                
+                success_message = "\n\n".join(success_parts)
+                
+                success_msg = AIMessage(content=success_message)
+                state.messages.append(success_msg)
+                
+                # Create success message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": success_message
+                    }),
+                )
 
                 # Save state
                 save_agent_state(self.db_client, state.conversation_id, state)
@@ -736,8 +709,19 @@ class LangGraphOrchestrator:
                 state.current_document_in_workflow_state.template_file_public_url = ""
                 state.current_document_in_workflow_state.template_translated_file_public_url = ""
             
-                # Store error context for LLM to generate appropriate error message
-                state.context["template_error"] = str(e)
+                error_msg = AIMessage(content="⚠️ Unable to find matching templates for this document. Manual processing may be required.")
+                state.messages.append(error_msg)
+            
+                # Create error message in database
+                self.db_client.create_message(
+                    conversation_id=state.conversation_id,
+                    sender="assistant",
+                    kind="text",
+                    body=json.dumps({
+                        "text": "⚠️ Unable to find matching templates for this document. Manual processing may be required."
+                    }),
+                )
+            
                 state.workflow_status = WorkflowStatus.FAILED
                 
             print(f"🔍 [FIND_TEMPLATE] Completed")
@@ -749,6 +733,20 @@ class LangGraphOrchestrator:
         This calls the extract_values_from_document helper function directly.
         """
         print(f"📄 [EXTRACT_VALUES] Starting for conversation: {state.conversation_id}")
+        
+        # Insert a message that we're extracting values from the document
+        extraction_msg = AIMessage(content="📄 Extracting values from the document using OCR...")
+        state.messages.append(extraction_msg)
+        
+        # Create message in database too
+        self.db_client.create_message(
+            conversation_id=state.conversation_id,
+            sender="assistant",
+            kind="text",
+            body=json.dumps({
+                "text": "📄 Extracting values from the document using OCR..."
+            }),
+        )
         
         # Mark this step as done
         state.steps_done.append("extract_values")
@@ -787,13 +785,13 @@ class LangGraphOrchestrator:
                 # Update existing fields with extracted values
                 for field_key, field_data in extracted_fields.items():
                     if field_key in state.current_document_in_workflow_state.fields:
-                        print(f"📄1.  [EXTRACT_VALUES] Updating existing field: {field_key} with {field_data.get("value", "")}")
+                        # print(f"📄1.  [EXTRACT_VALUES] Updating existing field: {field_key} with {field_data.get("value", "")}")
                         # Update the existing FieldMetadata with the extracted value
                         state.current_document_in_workflow_state.fields[field_key].value = field_data.get("value", "")
                         state.current_document_in_workflow_state.fields[field_key].value_status = "ocr"
                     else:
                         # Create new FieldMetadata for fields not previously in the template
-                        print(f"📄2. [EXTRACT_VALUES] Adding new field: {field_key} with {field_data.get("value", "")}")
+                        # print(f"📄2. [EXTRACT_VALUES] Adding new field: {field_key} with {field_data.get("value", "")}")
                         from agent.agent_state import FieldMetadata
                         state.current_document_in_workflow_state.fields[field_key] = FieldMetadata(
                             value=field_data.get("value", ""),
@@ -803,22 +801,44 @@ class LangGraphOrchestrator:
                 print(f"📄 [EXTRACT_VALUES] Successfully extracted {len(extracted_fields)} fields")
                 print(f"📄 [EXTRACT_VALUES] Updated fields with OCR values: {len(extracted_fields)} fields")
                 
-                # Get missing fields info
+                # Create detailed summary of extraction results
                 missing_fields = extraction_result.get("missing_value_keys", {})
+                
                 doc_type = extraction_result.get("doc_type", "unknown")
                 variation = extraction_result.get("variation", "standard")
                 
-                # Store extraction context for LLM to generate dynamic response
-                state.context["extraction_completed"] = True
-                state.context["extraction_info"] = {
-                    "extracted_count": len(extracted_fields),
-                    "missing_count": len(missing_fields),
-                    "total_fields": len(extracted_fields) + len(missing_fields),
-                    "doc_type": doc_type,
-                    "variation": variation,
-                    "extracted_fields": {k: v.get("label", k) for k, v in list(extracted_fields.items())[:5]},  # First 5 for summary
-                    "missing_fields": {k: v.get("label", k) for k, v in list(missing_fields.items())[:3]}  # First 3 for summary
-                }
+                summary_parts = [
+                    f"[Extraction Step]",
+                    f"✅ **Value Extraction Complete**\n",
+                    f"• **Document Type**: {doc_type.replace('_', ' ').title()}\n",
+                    f"• **Variation**: {variation.replace('_', ' ').title()}\n\n",
+                    f"• **Fields Extracted**: {len(extracted_fields)} out of {len(extracted_fields) + len(missing_fields)} total fields\n\n",
+                ]
+                
+                # Show extracted fields summary
+                if extracted_fields:
+                    summary_parts.append("\n\n**📋 Successfully Extracted Fields:**\n\n")
+                    for field_key, field_data in extracted_fields.items():
+                        # Clean up the field key for display
+                        clean_key = field_key.strip('{}')
+                        label = field_data.get("label", clean_key)
+                        # Get the value from the field_data dictionary
+                        field_value = field_data.get("value", "")
+                        # Truncate long values for display
+                        display_value = str(field_value)[:50] + "..." if len(str(field_value)) > 50 else str(field_value)
+                        summary_parts.append(f"• **{label}**: {display_value}\n\n")
+                
+                # Show missing fields if any
+                if missing_fields:
+                    summary_parts.append(f"\n\n**⚠️ Missing Fields ({len(missing_fields)}):**\n\n")
+                    for field_key, field_data in missing_fields.items():
+                        clean_key = field_key.strip('{}')
+                        field_label = field_data.get("label", clean_key)
+                        summary_parts.append(f"• **{field_label}**\n\n")
+                    summary_parts.append("\n\n*These fields were not found in the document or were unclear during OCR processing. Please manually add them*\n\n")
+                
+                # Join all parts and remove any trailing newlines, then ensure single trailing newline
+                response_text = "".join(summary_parts).rstrip() + "\n\n"
 
                 # Save the agent state with the extracted fields
                 save_agent_state(self.db_client, state.conversation_id, state)
@@ -830,28 +850,68 @@ class LangGraphOrchestrator:
             else:
                 # Handle extraction failure
                 error_msg = extraction_result.get("error", "Unknown extraction error")
+                response_text = f"❌ **Value Extraction Failed**\n\n\nError: {error_msg}"
+                
+                # If there's a raw response, include it for debugging
+                if extraction_result.get("raw_response"):
+                    response_text += f"\n\n*Debug Info*: {extraction_result['raw_response'][:200]}..."
                 
                 # Clear all field values on failure but keep the field structure
                 for field_key in state.current_document_in_workflow_state.fields:
                     state.current_document_in_workflow_state.fields[field_key].value = ""
                     state.current_document_in_workflow_state.fields[field_key].value_status = "pending"
                 
-                # Store error context for LLM to generate appropriate error message
-                state.context["extraction_error"] = error_msg
                 state.workflow_status = WorkflowStatus.FAILED
+            
+            # Create the response message
+            summary_msg = AIMessage(content=response_text)
+            state.messages.append(summary_msg)
+            
+            # Create message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": response_text
+                }),
+            )
+
+            caution_msg_text = "Please double check the values extracted from the document using our interactive document forms editor at the upper right. "
+            caution_ai_msg = AIMessage(content=caution_msg_text)
+            state.messages.append(caution_ai_msg)
+
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": caution_msg_text
+                }),
+            )
             
             print(f"📄 [EXTRACT_VALUES] Extraction process completed")
             
         except Exception as e:
             print(f"❌ [EXTRACT_VALUES] Error during extraction: {str(e)}")
+            error_msg = AIMessage(content=f"❌ Error extracting values from document: {str(e)}")
+            state.messages.append(error_msg)
+            
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": f"❌ Error extracting values from document: {str(e)}"
+                }),
+            )
             
             # Clear all field values on error but keep the field structure
             for field_key in state.current_document_in_workflow_state.fields:
                 state.current_document_in_workflow_state.fields[field_key].value = ""
                 state.current_document_in_workflow_state.fields[field_key].value_status = "pending"
             
-            # Store error context for LLM to generate appropriate error message
-            state.context["extraction_error"] = str(e)
             state.workflow_status = WorkflowStatus.FAILED
         
         return state
@@ -872,17 +932,6 @@ class LangGraphOrchestrator:
         """
         print(f"🌐 [ASK_LANGUAGE] Starting for conversation: {state.conversation_id}")
         
-        # Add recursion guard to prevent infinite loops
-        ask_language_count = state.context.get("ask_language_count", 0)
-        if ask_language_count >= 3:
-            print(f"🌐 [ASK_LANGUAGE] Recursion guard triggered - already asked {ask_language_count} times")
-            # Force workflow to save and exit to prevent infinite loop
-            state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION  
-            return state
-        
-        # Increment the counter
-        state.context["ask_language_count"] = ask_language_count + 1
-        
         # Mark this step as done
         if "ask_user_desired_langauge" not in state.steps_done:
             state.steps_done.append("ask_user_desired_langauge")
@@ -897,24 +946,49 @@ class LangGraphOrchestrator:
                 doc_type = analysis.get("doc_type", "document").replace("_", " ").title()
                 detected_language = analysis.get("detected_language", "unknown").replace("_", " ").title()
             
-            # Store language request context for LLM to generate dynamic response
-            state.context["language_request"] = True
-            state.context["language_info"] = {
-                "doc_type": doc_type,
-                "detected_language": normalize_language(detected_language)
-            }
+            # Create message asking for desired language
+            language_prompt = (
+                f"🌐 **Let me try to find existing template from the database**\n\n"
+                f"I've analyzed your **{doc_type}** (currently in **{normalize_language(detected_language)}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
+                f"**To try and find the template of this document, I would need to know the desired language, What language would you like me to translate it to?**\n\n"
+                f"Please specify your desired target language, and I'll proceed with finding the appropriate template."
+            )
+            
+            language_msg = AIMessage(content=language_prompt)
+            state.messages.append(language_msg)
+            
+            # Create message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": language_prompt
+                }),
+            )
             
             # Set workflow status to waiting for user input
             state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
             
-            print(f"🌐 [ASK_LANGUAGE] Language prompt context set successfully")
+            print(f"🌐 [ASK_LANGUAGE] Language prompt sent successfully")
             
         except Exception as e:
             print(f"🌐 [ASK_LANGUAGE] ERROR: {str(e)}")
             log.exception(f"Error asking for desired language: {e}")
             
-            # Store error context for LLM to generate appropriate error message
-            state.context["language_request_error"] = str(e)
+            error_msg = AIMessage(content="⚠️ Please specify what language you'd like me to translate your document to.")
+            state.messages.append(error_msg)
+            
+            # Create error message in database
+            self.db_client.create_message(
+                conversation_id=state.conversation_id,
+                sender="assistant",
+                kind="text",
+                body=json.dumps({
+                    "text": "⚠️ Please specify what language you'd like me to translate your document to."
+                }),
+            )
+            
             state.workflow_status = WorkflowStatus.WAITING_CONFIRMATION
 
         print(f"🌐 [ASK_LANGUAGE] Completed")
