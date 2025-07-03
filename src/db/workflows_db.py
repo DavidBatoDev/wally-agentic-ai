@@ -55,7 +55,8 @@ def _extract_template_mappings(db_client: SupabaseClient, template_id: str) -> D
                 "page_number": item.get("page_number", 1),
                 "bbox_center": bbox_center,
                 "rotation": item.get("rotation", 0),
-                "alignment": item.get("alignment", "left")
+                "alignment": item.get("alignment", "left"),
+                "character_spacing": item.get("character_spacing", 0),
             }
         
         return template_mappings
