@@ -637,44 +637,8 @@ async def translate_all_workflow_fields(
                         "translated_status": "pending"
                     }
         
-        # ── update database ─────────────────────────────────────────────────
-        update_data = {
-            "fields": updated_fields,
-            "updated_at": "now()"
-        }
-        
-        result = supabase_client.client.table("workflows").update(update_data).eq(
-            "conversation_id", str(conversation_id)
-        ).execute()
-        
-        if not result.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to update workflow with translations"
-            )
-
-        # ── update agent_state table ────────────────────────────────────────
-        try:
-            agent_state_result = supabase_client.client.table("agent_state").select("state_data").eq(
-                "conversation_id", str(conversation_id)
-            ).execute()
-            
-            if agent_state_result.data:
-                current_state_data = agent_state_result.data[0].get("state_data", {})
-                
-                if "current_document_in_workflow_state" not in current_state_data:
-                    current_state_data["current_document_in_workflow_state"] = {}
-                
-                current_state_data["current_document_in_workflow_state"]["fields"] = updated_fields
-                
-                supabase_client.client.table("agent_state").update({
-                    "state_data": current_state_data,
-                    "updated_at": "now()"
-                }).eq("conversation_id", str(conversation_id)).execute()
-        except Exception as agent_state_error:
-            print(f"Warning: Failed to update agent_state: {agent_state_error}")
-        
-        # ── prepare response ────────────────────────────────────────────────
+        # ── prepare response without saving to database ──────────────────────
+        # Return only the translation results without updating the database
         translated_fields_response = {k: v for k, v in translations.items()}
         
         return TranslationResponse(
@@ -741,16 +705,22 @@ async def translate_single_workflow_field(
                 detail=f"Field '{request.field_key}' has no value to translate"
             )
         
-        # ── determine source language ───────────────────────────────────────
-        source_language = workflow.translate_from
+        # ── determine source and target language (normalize) ────────────────
+        # Always normalize both target and source language codes
+        target_language_code, _ = normalize_and_validate_language(request.target_language)
+        source_language_code = None
+        if request.source_language:
+            source_language_code, _ = normalize_and_validate_language(request.source_language)
+        else:
+            source_language_code = workflow.translate_from
         
         # ── perform translation ─────────────────────────────────────────────
         try:
             print(field_value)
             translated_value = translation_service.translate_field_value(
                 str(field_value),
-                workflow.translate_to,
-                source_language,
+                target_language_code,
+                source_language_code,
                 field_context=request.field_key,
                 use_gemini=request.use_gemini
             )
@@ -761,103 +731,16 @@ async def translate_single_workflow_field(
                 detail=f"Translation service error: {str(translation_error)}"
             )
         
-        # ── update field with translation ───────────────────────────────────
-        if hasattr(field_metadata, 'value'):
-            updated_field = {
-                "value": field_metadata.value,
-                "value_status": field_metadata.value_status,
-                "translated_value": translated_value,
-                "translated_status": "translated"
-            }
-        elif isinstance(field_metadata, dict):
-            updated_field = {
-                "value": field_metadata.get('value'),
-                "value_status": field_metadata.get('value_status', 'pending'),
-                "translated_value": translated_value,
-                "translated_status": "translated"
-            }
-        else:
-            updated_field = {
-                "value": field_metadata,
-                "value_status": "pending",
-                "translated_value": translated_value,
-                "translated_status": "translated"
-            }
-        
-        # ── update workflow fields ──────────────────────────────────────────
-        updated_fields = {}
-        for field_key, field_data in current_fields.items():
-            if field_key == request.field_key:
-                updated_fields[field_key] = updated_field
-            else:
-                # Keep other fields unchanged
-                if hasattr(field_data, 'value'):
-                    updated_fields[field_key] = {
-                        "value": field_data.value,
-                        "value_status": field_data.value_status,
-                        "translated_value": field_data.translated_value,
-                        "translated_status": field_data.translated_status
-                    }
-                elif isinstance(field_data, dict):
-                    updated_fields[field_key] = field_data
-                else:
-                    updated_fields[field_key] = {
-                        "value": field_data,
-                        "value_status": "pending",
-                        "translated_value": None,
-                        "translated_status": "pending"
-                    }
-        
-        # ── update database ─────────────────────────────────────────────────
-        update_data = {
-            "fields": updated_fields,
-            "updated_at": "now()"
-        }
-        
-        result = supabase_client.client.table("workflows").update(update_data).eq(
-            "conversation_id", str(conversation_id)
-        ).execute()
-        
-        if not result.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to update workflow with translation"
-            )
-
-        # ── update agent_state table ────────────────────────────────────────
-        try:
-            agent_state_result = supabase_client.client.table("agent_state").select("state_data").eq(
-                "conversation_id", str(conversation_id)
-            ).execute()
-            
-            if agent_state_result.data:
-                current_state_data = agent_state_result.data[0].get("state_data", {})
-                
-                if "current_document_in_workflow_state" not in current_state_data:
-                    current_state_data["current_document_in_workflow_state"] = {}
-                
-                if "fields" not in current_state_data["current_document_in_workflow_state"]:
-                    current_state_data["current_document_in_workflow_state"]["fields"] = {}
-                
-                current_state_data["current_document_in_workflow_state"]["fields"][request.field_key] = updated_field
-                
-                supabase_client.client.table("agent_state").update({
-                    "state_data": current_state_data,
-                    "updated_at": "now()"
-                }).eq("conversation_id", str(conversation_id)).execute()
-        except Exception as agent_state_error:
-            print(f"Warning: Failed to update agent_state: {agent_state_error}")
-
+        # ── return translation result without saving to database ───────────────
         return {
             "success": True,
-            "message": f"Successfully translated field '{request.field_key}'",
+            "message": f"Successfully translated field '{request.field_key}' (preview only - not saved)",
             "field_key": request.field_key,
             "original_value": field_value,
             "translated_value": translated_value,
-            "source_language": source_language,
-            "target_language": request.target_language,
-            "translation_method": "gemini" if request.use_gemini else "google_translate",
-            "updated_field": updated_field
+            "source_language": source_language_code,
+            "target_language": target_language_code,
+            "translation_method": "gemini" if request.use_gemini else "google_translate"
         }
 
     except HTTPException:
