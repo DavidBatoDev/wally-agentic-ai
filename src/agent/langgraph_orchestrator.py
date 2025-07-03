@@ -657,10 +657,22 @@ class LangGraphOrchestrator:
                     state.current_document_in_workflow_state.template_translated_file_public_url = ""
                 
                 # Create success message
+                # Get format year from document analysis for display
+                format_year = latest_templatable_upload.analysis.get("format_year", "unknown") if latest_templatable_upload.analysis else "unknown"
+                
+                # Check for reissued document indicators
+                has_modern_security = latest_templatable_upload.analysis.get("has_psa_features", False) if latest_templatable_upload.analysis else False
+                reissued_indicator = ""
+                if format_year == "1958" and has_modern_security:
+                    reissued_indicator = " (Reissued with modern security features)"
+                elif format_year == "1993" and has_modern_security:
+                    reissued_indicator = " (Original format with security features)"
+                
                 success_parts = [
                     f"[Intermediate Step]"
                     f"✅ **Template Matching Complete**",
                     f"📋 **Document Type**: {original_template.get('doc_type', 'unknown').replace('_', ' ').title()}",
+                    f"📅 **Format Year**: {format_year}{reissued_indicator}",
                     f"🔧 **Original Template**: {original_template.get('variation', 'unknown')}",
                 ]
                 
@@ -940,16 +952,19 @@ class LangGraphOrchestrator:
             # Get document info for context
             doc_type = "document"
             detected_language = "unknown"
+            format_year = "unknown"
             
             if state.latest_upload and state.latest_upload.analysis:
                 analysis = state.latest_upload.analysis
                 doc_type = analysis.get("doc_type", "document").replace("_", " ").title()
                 detected_language = analysis.get("detected_language", "unknown").replace("_", " ").title()
+                format_year = analysis.get("format_year", "unknown")
             
             # Create message asking for desired language
+            format_year_info = f" (Format: {format_year})" if format_year != "unknown" else ""
             language_prompt = (
                 f"🌐 **Let me try to find existing template from the database**\n\n"
-                f"I've analyzed your **{doc_type}** (currently in **{normalize_language(detected_language)}**). Before I find a template document to the database please provide me a to target desired language!\n\n"
+                f"I've analyzed your **{doc_type}** (currently in **{normalize_language(detected_language)}**{format_year_info}). Before I find a template document to the database please provide me a to target desired language!\n\n"
                 f"**To try and find the template of this document, I would need to know the desired language, What language would you like me to translate it to?**\n\n"
                 f"Please specify your desired target language, and I'll proceed with finding the appropriate template."
             )

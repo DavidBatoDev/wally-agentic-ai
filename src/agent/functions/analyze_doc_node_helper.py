@@ -110,6 +110,7 @@ Analyze this document thoroughly and provide a JSON response with the following 
 - is_psa_document: boolean indicating if this appears to be a PSA (Philippine Statistics Authority) document
 - has_psa_features: boolean indicating if document has PSA-specific features (security paper, official seals, QR codes, reference numbers, etc.)
 - is_templatable: boolean indicating if this PSA document contains actual personal data/values that can be extracted for templating (not blank forms)
+- format_year: string indicating the document format year/era (e.g., "1958", "1993", "unknown") - this is CRITICAL for template matching
 
 For the content_summary field, provide a comprehensive explanation that includes:
 1. What type of document this is and its primary purpose
@@ -130,6 +131,73 @@ SPECIAL FOCUS: Pay close attention to identifying PSA documents and determining 
 - Identify birth certificate specific fields (name, birth date, place of birth, parents' names, etc.)
 - Note any Philippine government formatting or standards
 
+CRITICAL FOR format_year DETERMINATION:
+The format_year is essential for proper template matching. This is EXTREMELY challenging because documents can be REISSUED - meaning old documents (1958) are scanned and then modern security features, seals, and watermarks are added while preserving the original layout and content structure.
+
+**FOCUS ON THE DOCUMENT CONTENT STRUCTURE, NOT JUST SECURITY FEATURES:**
+
+- Set format_year to "1958" if you observe:
+  * **LAYOUT & TYPOGRAPHY**: Older, simpler document layout with vintage typography and font styles
+  * **FIELD ARRANGEMENT**: Basic field arrangements typical of 1950s-era government forms
+  * **CONTENT STRUCTURE**: Look at the MIDDLE SECTION of the document - how fields are organized, labeled, and positioned
+  * **FONT STYLES**: Older typewriter-style fonts or basic printing fonts in the filled sections
+  * **FORM DESIGN**: Simpler, more basic form design with less sophisticated field organization
+  * **DATES IN CONTENT**: Birth dates, registration dates, or other dates that suggest the document originates from the 1950s era
+  * **FILENAME CLUES**: Check if filename contains hints like "1958", birth years from 1950s, or other temporal indicators
+
+- Set format_year to "1993" if you observe:
+  * **LAYOUT & TYPOGRAPHY**: More modern document layout with updated typography and cleaner formatting
+  * **FIELD ARRANGEMENT**: More sophisticated field organization with improved structure
+  * **CONTENT STRUCTURE**: Better organized sections with more systematic data presentation
+  * **FONT STYLES**: More modern, cleaner fonts used throughout the document content
+  * **FORM DESIGN**: More structured and organized form design with better field grouping
+  * **DATES IN CONTENT**: Birth dates, registration dates, or other dates that suggest the document originates from the 1990s era
+  * **FILENAME CLUES**: Check if filename contains hints like "1993", birth years from 1990s, or other temporal indicators
+
+**CRITICAL CONSIDERATIONS FOR REISSUED DOCUMENTS:**
+
+⚠️ **DO NOT BE FOOLED BY MODERN SECURITY FEATURES ALONE** - A document with modern watermarks, QR codes, or security paper might still be a 1958 format document that was reissued!
+
+**FOCUS ON THESE PRIMARY INDICATORS (in order of importance):**
+
+1. **DOCUMENT CONTENT LAYOUT**: How are the fields arranged? Does it follow 1950s simplicity or 1990s organization?
+2. **TYPOGRAPHY OF FILLED CONTENT**: What fonts are used in the actual data fields? Old typewriter style vs modern printing?
+3. **FIELD STRUCTURE**: How are names, dates, and other information organized and presented?
+4. **DATES WITHIN DOCUMENT**: What are the actual birth dates, registration dates, or issue dates mentioned in the content?
+5. **FILENAME AND METADATA**: Any hints about the document's origin from the filename or document properties?
+
+**IGNORE OR DEPRIORITIZE THESE WHEN DETERMINING FORMAT YEAR:**
+- Modern security features (watermarks, QR codes, special paper) - these can be added during reissue
+- Modern official seals or stamps - these are often updated when documents are reissued
+- Color quality or paper quality - these can be enhanced during reissue
+- Modern printing quality - documents can be reprinted with better quality
+
+**DECISION LOGIC:**
+- If the CORE CONTENT STRUCTURE and LAYOUT suggests 1950s design → "1958"
+- If the CORE CONTENT STRUCTURE and LAYOUT suggests 1990s design → "1993"
+- If you cannot clearly distinguish the core content structure → "unknown"
+
+**EXAMPLE SCENARIOS:**
+- Document with QR codes BUT simple 1950s field layout → "1958" (reissued old document)
+- Document with basic security BUT modern organized field structure → "1993"
+- Document with modern features AND modern layout → "1993"
+- Document with minimal security BUT clear 1950s typography → "1958"
+
+- Set format_year to "unknown" if:
+  * The document format doesn't clearly match either era
+  * The document is not a PSA document
+  * You cannot confidently determine the format year based on content structure
+  * The document appears to be from a different era entirely
+  * The layout and typography are ambiguous or unclear
+
+IMPORTANT: Carefully look at the layout of the document and the font styles in the document and the filled parts since it is distinguishable when it is old from the fonts used. Look more at the middle part of the document.
+
+It is important to note that while there might be security features, the document might not be a modern PSA document since when a official document is reissued, especially with old documents, the modern security features are added.
+
+- to further help to determine the format_year, you can also look at the filename of the document as well as the dates in the document.
+
+IMPORTANT: The format_year determination is CRITICAL as it directly impacts template matching. Different format years have different field layouts, structures, and data organization patterns.
+
 CRITICAL FOR is_templatable DETERMINATION:
 - Set is_templatable to TRUE only if:
   1. The document is clearly a PSA document (birth certificate, death certificate, marriage certificate, etc.)
@@ -137,6 +205,7 @@ CRITICAL FOR is_templatable DETERMINATION:
   3. AND you can see COMPLETED fields with actual data (not placeholders, templates, or variables like {name}, {date}, etc.)
   4. AND the document appears to be 1-2 pages maximum
   5. AND your confidence level is at least 0.6
+  6. AND you can determine the format_year (either "1958" or "1993")
 
 - Set is_templatable to FALSE if:
   1. It's not a PSA document
@@ -146,6 +215,7 @@ CRITICAL FOR is_templatable DETERMINATION:
   5. OR it's more than 2 pages
   6. OR confidence is below 0.6
   7. OR you cannot clearly identify actual completed personal information
+  8. OR you cannot determine the format_year
 
 IMPORTANT: Pay special attention to distinguish between:
 - BLANK FORMS/TEMPLATES: Contains placeholders like {name}, {date}, empty fields, or template formatting → NOT templatable
@@ -153,7 +223,7 @@ IMPORTANT: Pay special attention to distinguish between:
 
 For page_count: Be very precise. Count actual document pages, not including blank pages or covers.
 
-IMPORTANT: Be extremely accurate about the page count, document classification, and especially the is_templatable determination. The system relies on your assessment to determine processing workflow.
+IMPORTANT: Be extremely accurate about the page count, document classification, format_year determination, and especially the is_templatable determination. The system relies on your assessment to determine processing workflow and template matching.
 
 Return only valid JSON without any markdown formatting or additional text.
 """
@@ -290,7 +360,8 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
             "doc_classification": doc_classification,
             "is_templatable": is_templatable,
             "is_psa_document": gemini_result.get("is_psa_document", False),
-            "has_psa_features": gemini_result.get("has_psa_features", False)
+            "has_psa_features": gemini_result.get("has_psa_features", False),
+            "format_year": gemini_result.get("format_year", "unknown")
         }
         
         log.debug("Analysis complete → %s", {k: v for k, v in analysis_result.items() if k != "content_summary"})
@@ -328,5 +399,6 @@ async def analyze_upload(file_id: str, public_url: str) -> Dict[str, Any]:
             "doc_classification": "other",
             "is_templatable": fallback_is_templatable,
             "is_psa_document": False,
-            "has_psa_features": False
+            "has_psa_features": False,
+            "format_year": "unknown"
         }

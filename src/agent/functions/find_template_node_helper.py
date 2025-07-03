@@ -116,6 +116,21 @@ async def find_template_match(
         doc_type = _determine_doc_type_for_template(latest_templatable_upload)
         log.debug(f"Determined doc_type: {doc_type}")
         
+        # Get format year from document analysis
+        format_year = latest_templatable_upload.analysis.get("format_year", "unknown") if latest_templatable_upload.analysis else "unknown"
+        log.debug(f"Document format year: {format_year}")
+        
+        # Check for reissued document indicators
+        has_modern_security = latest_templatable_upload.analysis.get("has_psa_features", False) if latest_templatable_upload.analysis else False
+        is_psa_document = latest_templatable_upload.analysis.get("is_psa_document", False) if latest_templatable_upload.analysis else False
+        
+        if format_year == "1958" and has_modern_security:
+            log.debug("⚠️ Detected potentially reissued 1958 document with modern security features")
+        elif format_year == "1993" and has_modern_security:
+            log.debug("✅ Detected native 1993 document with expected security features")
+        elif format_year == "unknown" and has_modern_security:
+            log.debug("⚠️ Document has modern security features but format year is unknown")
+        
         # Normalize languages for template matching
         original_language = _normalize_language_for_template(translate_from)
         target_language = _normalize_language_for_template(translate_to)
@@ -134,37 +149,73 @@ async def find_template_match(
         templates = templates_response.data
         log.debug(f"Found {len(templates)} templates for doc_type: {doc_type}")
         
-        # Find original template (source language)
+        # Find original template (source language + format year)
         original_template = None
         translated_template = None
         
-        # Look for templates matching the language variations
+        # Helper function to check if a template matches language and format year
+        def template_matches(template_variation: str, language: str, year: str) -> bool:
+            """Check if template variation matches language and format year."""
+            variation_lower = template_variation.lower()
+            language_lower = language.lower()
+            
+            # Check if language matches
+            language_match = language_lower in variation_lower
+            
+            # Check if format year matches (if known)
+            if year != "unknown":
+                year_match = year in variation_lower
+                return language_match and year_match
+            else:
+                # If format year is unknown, just match by language
+                return language_match
+        
+        # Look for exact matches first (language + format year)
+        log.debug("Looking for exact matches (language + format year)")
         for template in templates:
             variation = template.get("variation", "")
             
-            # Check if this template matches the original language
-            if original_language.lower() in variation.lower():
+            # Check for original language match
+            if template_matches(variation, original_language, format_year):
                 original_template = template
-                log.debug(f"Found original template: {template['id']} - {variation}")
+                log.debug(f"Found exact original template: {template['id']} - {variation}")
             
-            # Check if this template matches the target language
-            if target_language.lower() in variation.lower():
+            # Check for target language match
+            if template_matches(variation, target_language, format_year):
                 translated_template = template
-                log.debug(f"Found translated template: {template['id']} - {variation}")
+                log.debug(f"Found exact translated template: {template['id']} - {variation}")
         
-        # If we couldn't find exact matches, try fallback logic
-        if not original_template:
-            # Default to English template as fallback for original
+        # If we couldn't find exact matches and format year is known, try language-only matches
+        if (not original_template or not translated_template) and format_year != "unknown":
+            log.debug("Exact matches not found, trying language-only matches")
+            
             for template in templates:
-                if "english" in template.get("variation", "").lower():
+                variation = template.get("variation", "")
+                
+                # Check for original language match (without format year requirement)
+                if not original_template and original_language.lower() in variation.lower():
                     original_template = template
-                    log.debug(f"Using English fallback for original: {template['id']}")
-                    break
+                    log.debug(f"Found language-only original template: {template['id']} - {variation}")
+                
+                # Check for target language match (without format year requirement)
+                if not translated_template and target_language.lower() in variation.lower():
+                    translated_template = template
+                    log.debug(f"Found language-only translated template: {template['id']} - {variation}")
         
-        if not translated_template and target_language != "English":
-            # If no specific translated version exists, we'll use the original for now
-            # The system can handle translation without a specific template
-            log.debug(f"No specific template found for {target_language}, will rely on dynamic translation")
+        # Final fallback: English templates
+        if not original_template:
+            log.debug("No original template found, trying English fallback")
+            for template in templates:
+                variation = template.get("variation", "")
+                if "english" in variation.lower():
+                    # Prefer English template with matching format year if available
+                    if format_year != "unknown" and format_year in variation.lower():
+                        original_template = template
+                        log.debug(f"Found English fallback with format year: {template['id']} - {variation}")
+                        break
+                    elif not original_template:  # Keep first English template as backup
+                        original_template = template
+                        log.debug(f"Found English fallback template: {template['id']} - {variation}")
         
         # If both languages are the same, use the same template for both
         if original_language == target_language and original_template:
@@ -173,17 +224,19 @@ async def find_template_match(
         
         # Validate that we have at least an original template
         if not original_template:
-            log.error(f"Could not find any suitable template for doc_type: {doc_type}")
+            log.error(f"Could not find any suitable template for doc_type: {doc_type}, language: {original_language}, format_year: {format_year}")
             return None, None
         
-        # Extract additional info from templates
+        # Log template selection details
         if original_template:
             original_info = original_template.get("info_json", {})
-            log.debug(f"Original template required fields: {len(original_info.get('required_fields', {}))}")
+            log.debug(f"Selected original template: {original_template['variation']} with {len(original_info.get('required_fields', {}))} required fields")
         
         if translated_template:
             translated_info = translated_template.get("info_json", {})
-            log.debug(f"Translated template required fields: {len(translated_info.get('required_fields', {}))}")
+            log.debug(f"Selected translated template: {translated_template['variation']} with {len(translated_info.get('required_fields', {}))} required fields")
+        else:
+            log.debug(f"No specific translated template found for {target_language}, will use dynamic translation")
         
         log.debug("Template matching completed successfully")
         return original_template, translated_template
@@ -232,6 +285,31 @@ def validate_template_compatibility(template: Dict[str, Any], upload: Upload) ->
         if page_count and page_count > 3:  # PSA documents are typically 1-2 pages
             log.debug(f"Document has too many pages for PSA template: {page_count}")
             return False
+        
+        # Check format year compatibility
+        doc_format_year = upload.analysis.get("format_year", "unknown")
+        template_variation = template.get("variation", "")
+        
+        if doc_format_year != "unknown":
+            # If document has a known format year, prefer templates with matching format year
+            if doc_format_year in template_variation:
+                log.debug(f"Template format year matches document: {doc_format_year}")
+            else:
+                log.debug(f"Template format year mismatch - Document: {doc_format_year}, Template: {template_variation}")
+                # Don't fail validation but log the mismatch - the system can still work with mismatched years
+        
+        # Additional validation for reissued documents
+        # Check if document has clear PSA features regardless of format year
+        if upload.analysis.get("is_psa_document", False):
+            log.debug("Document confirmed as PSA document - template compatibility maintained")
+        
+        # For reissued documents, we need to be more flexible about security features
+        # The presence of modern security features doesn't disqualify older format templates
+        has_modern_security = upload.analysis.get("has_psa_features", False)
+        if has_modern_security and doc_format_year == "1958":
+            log.debug("Document appears to be reissued 1958 format with modern security features")
+        elif has_modern_security and doc_format_year == "1993":
+            log.debug("Document appears to be native 1993 format with expected security features")
         
         log.debug("Template compatibility validation passed")
         return True

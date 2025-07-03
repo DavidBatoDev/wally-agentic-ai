@@ -24,7 +24,7 @@ def get_langgraph_orchestrator() -> LangGraphOrchestrator:
     """
     # Initialize the LLM
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash-exp",
+        model="gemini-2.0-flash",
         google_api_key=settings.GEMINI_API_KEY,
         temperature=settings.DEFAULT_AGENT_TEMPERATURE,
     )
